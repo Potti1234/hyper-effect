@@ -483,6 +483,9 @@ const CLIENT_SCRIPT = `(() => {
     if (pressedLink) { pressedLink = null; navigateInSession(new URL(location.href)) }
   })
   window.addEventListener('popstate', () => { if (inSession(new URL(location.href))) navigateInSession(new URL(location.href)); else location.reload() })
+  // A page restored from the back/forward cache has lost its stream, and the
+  // session may be gone; load it again rather than show a dead page.
+  window.addEventListener('pageshow', evt => { if (evt.persisted) location.reload() })
   const sameOrigin = url => { try { return new URL(url, location.href).origin === location.origin } catch { return false } }
   let lastActions = ''
   window.${RUN_ACTIONS} = (json, endpoint) => {
