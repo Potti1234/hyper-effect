@@ -52,9 +52,10 @@ import * as Picker from '../view/picker'
 import { decodeTeam, patchFor, propertyIcon, propertyItems, valuesOf } from '../view/properties'
 import { type NavCounts, VIEWS, hint, sidebar } from '../view/shell'
 
-/* The issue list and board: one program, mounted three times (a team's
-   issues, My issues, All issues). Everything a user does here is a Message
-   handled on the server:
+/* The issue list and board: one program for a team's issues, My issues and
+   All issues. Moving between them stays in the session (onUrlChange): the
+   sidebar's links change the scope instead of loading a page. Everything a
+   user does here is a Message handled on the server:
    - the shared list arrives live through a Subscription on the workspace;
    - filters, search and the layout live in the Model and in the address bar;
    - the keyboard island reports shortcuts (c, j/k, Enter, s/p/a/l, /, Ctrl+K);
@@ -142,6 +143,7 @@ export const Message = defineMessageUnion({
   PressedShortcut: { shortcut: Shortcut, targetId: S.String },
   /** The page already moved the selection to this row (a local effect). */
   MovedSelection: { elementId: S.String },
+  ChangedUrl: { scope: Scope, query: Query },
   GotHelpDialog: { message: Dialog.Message },
   GotWorkspace: { members: S.Array(Member), issues: S.Array(Issue) },
   SucceededCreate: { id: S.String, identifier: S.String },
@@ -693,6 +695,9 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
         const issue = navigationOrder(model).find(candidate => `row-${candidate.identifier}` === elementId)
         return { model: issue === undefined ? model : { ...model, selectedId: issue.id } }
       },
+      ChangedUrl: ({ scope, query }) => ({
+        model: { ...model, scope, query, selectedId: null, picker: null, focus: null },
+      }),
       GotWorkspace: ({ members, issues }) => {
         const me = members.find(member => member.id === model.me.id) ?? model.me
         // A selection or picker on an issue someone deleted goes away.
@@ -1493,23 +1498,24 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
 
 // PROGRAM
 
-const scopeOf = (kind: Scope['_tag'], request: PageRequest): Effect.Effect<Scope, PageNotFound> => {
-  if (kind === 'Mine') return Effect.succeed({ _tag: 'Mine' })
-  if (kind === 'All') return Effect.succeed({ _tag: 'All' })
+const scopeOf = (request: PageRequest): Effect.Effect<Scope, PageNotFound> => {
+  if (request.url.pathname === '/my-issues') return Effect.succeed({ _tag: 'Mine' })
+  if (request.url.pathname === '/issues') return Effect.succeed({ _tag: 'All' })
   return Option.match(decodeTeam((request.params['team'] ?? '').toUpperCase()), {
     onNone: () => Effect.fail(new PageNotFound()),
     onSome: team => Effect.succeed({ _tag: 'Team' as const, team }),
   })
 }
 
-const makeProgram = (name: string, kind: Scope['_tag']): Program<Model, Message, ClientMessage, Flags, Workspace> => ({
-  name,
+/** Serves `/team/:team`, `/my-issues` and `/issues` (see `paths`). */
+export const program: Program<Model, Message, ClientMessage, Flags, Workspace> = {
+  name: 'issues',
   Model,
   ClientMessage,
   flags: request =>
     Effect.gen(function* () {
       const user = yield* requireUser(request)
-      const scope = yield* scopeOf(kind, request)
+      const scope = yield* scopeOf(request)
       const workspace = yield* Workspace
       const me = yield* workspace.memberFor(user)
       const state = yield* workspace.current
@@ -1533,9 +1539,13 @@ const makeProgram = (name: string, kind: Scope['_tag']): Program<Model, Message,
     FocusElement: ({ selector }) => (typeof selector === 'string' ? { focus: selector } : undefined),
   },
   // The session's own state; the workspace comes back from the Subscription.
-  snapshotDeps: model => [model.query, model.selectedId, model.collapsed, model.picker, model.draft, model.toast],
-})
+  onUrlChange: request =>
+    Effect.gen(function* () {
+      yield* requireUser(request)
+      const scope = yield* scopeOf(request)
+      return Message.ChangedUrl({ scope, query: queryFromUrl(request.url) })
+    }),
+  snapshotDeps: model => [model.scope, model.query, model.selectedId, model.collapsed, model.picker, model.draft, model.toast],
+}
 
-export const teamProgram = makeProgram('team', 'Team')
-export const myIssuesProgram = makeProgram('my-issues', 'Mine')
-export const allIssuesProgram = makeProgram('all-issues', 'All')
+export const paths = ['/my-issues', '/issues']

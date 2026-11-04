@@ -114,6 +114,21 @@ try {
   }))
   await visit(ada.page, '/team/ENG')
 
+  // The sidebar moves between list scopes within the session: no page load,
+  // the same session, and back returns to the team.
+  await settle(ada.page)
+  const sessionBefore = await ada.page.evaluate(() => {
+    window.hyperCheckMarker = true
+    return document.getElementById('hyper-control')?.getAttribute('data-hyper-endpoint')
+  })
+  await ada.page.locator('nav a[href="/my-issues"]').first().click()
+  check('a sidebar link moves to My issues within the session', await ada.page.waitForURL('**/my-issues', { timeout: TIMEOUT }).then(() => true, () => false) && await until(ada.page, () => {
+    const rows = [...document.querySelectorAll('#issue-list [id^="row-"]')]
+    return rows.length > 0 && rows.every(row => row.querySelector('[aria-label="Assignee: Ada Lovelace"]') !== null)
+  }) && await ada.page.evaluate(endpoint => window.hyperCheckMarker === true && document.getElementById('hyper-control')?.getAttribute('data-hyper-endpoint') === endpoint, sessionBefore))
+  await ada.page.goBack()
+  check('back returns to the team list in the same session', await ada.page.waitForURL('**/team/ENG', { timeout: TIMEOUT }).then(() => true, () => false) && await until(ada.page, () => document.querySelector('#issue-list [id^="row-ENG-"]') !== null && document.querySelector('#issue-list [id^="row-DES-"]') === null && window.hyperCheckMarker === true))
+
   // CREATE ISSUE
   await ada.page.keyboard.press('c')
   check('c opens the new issue dialog with the title focused', await until(ada.page, () => document.activeElement?.id === 'draft-title'))
