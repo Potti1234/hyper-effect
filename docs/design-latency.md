@@ -1,121 +1,88 @@
-# Design proposal: interactions without a round trip, and navigation within a session
+# Design: interactions without a round trip, and navigation within a session
 
-Status: **proposal, for decision** (2026-10-27). Nothing here is implemented yet. It follows from the Linear clone experiment (`apps/linear-clone/EXPERIMENT.md`) and the measurement below.
+Status: **sections 1–4 are implemented** (local effects, forwarded Commands with replies, navigation within a session, prefetch). Section 5 is still open, and section 6 is the longer-term direction. The proposal followed from the Linear clone experiment (`apps/linear-clone/EXPERIMENT.md`) and the measurement below. Every test and measurement behind it is listed in [hardening-log.md](hardening-log.md).
 
 ## The measurement
 
-The Linear clone in production mode, measured with `scripts/measure.mjs`. Over the network it went through `tools/net/shaper.mjs` with 40 ms each way, no jitter or loss.
+The Linear clone in production mode, measured with `scripts/measure.mjs` through `tools/net/shaper.mjs`: 40 ms each way, no jitter or loss.
 
-| Interaction | Locally | 80 ms round trip | Linear |
+| Interaction | Before (80 ms RTT) | Now (80 ms RTT) | How |
 |---|---|---|---|
-| Change a status: the person who clicked sees it | 18 ms | 102 ms | immediately (optimistic), synced in the background |
-| The same change, for a second person watching | 12 ms | 105 ms | about the same |
-| Open a picker (status, assignee) | 15 ms | 99 ms | immediately |
-| Picker input focused | 15 ms | 99 ms | immediately |
-| `j`/`k`: the selection moves | 14 ms | 103 ms | immediately |
-| Go to another view (sidebar link) | full page load | full page load + RTT | immediately, no reload |
+| `j`/`k`: the selection moves | median 87 ms, p95 90 ms | median 0 ms, p95 8 ms | local `select` effect (section 2) |
+| Change a status: the person who clicked sees it | median 93 ms | unchanged | data change, stays server-side |
+| The same change, for a second person watching | median 95 ms | unchanged | |
+| Open a picker (status, assignee) | median 88 ms | unchanged | its content is per-issue and filtered on the server; see section 6 |
+| Shortcuts dialog (`?`) | — | styled crease dialog, opened by a forwarded `ShowDialog` | section 4 |
+| Go to another list (sidebar link) | full page load | about 150 ms median in a browser loop, same session | section 3 |
+| Open an issue | about 158 ms median | about 76 ms median after resting on its row | section 3, prefetch |
 
-Every interaction costs a round trip plus about 20 ms, which is the design. For changes to shared data that is acceptable: the data must reach the server anyway, and 100 ms is short.
-
-It is not acceptable for interactions that change nothing but the screen: opening a menu, moving a selection, hovering, switching a tab, collapsing a group. These are instant in every native and client-rendered app, and at 80 ms they visibly lag. A product like Linear lives on them.
+Changes to shared data cost a round trip plus about 20 ms, by design: the data has to reach the server anyway. Interactions that change only the screen should not, and now need not.
 
 ## Principle
 
-Split interactions into two kinds:
-1. **Changes to data** (status, assignee, a comment). They stay as they are: event → server → morph. They may later get an optimistic hint (section 5), but the server stays the authority.
-2. **Changes to the screen only** (open/closed, selected, active, expanded, hovered). They should happen in the browser, at once, with the server told afterwards where it needs to know. The view still declares them; there is no hand-written client code.
+Two kinds of interaction:
+1. **Changes to data** (status, assignee, a comment): event → server → morph. The server is the authority.
+2. **Changes to the screen only** (open/closed, selected, focused): they happen in the browser at once, and the server is told afterwards with a normal Message where its Model needs to know. The view still declares them; there is no hand-written client code, and no browser-native replacement for crease's styled components.
 
-The server-side Model keeps the screen state too, so a re-render, a restore or another tab is still correct. It is only updated slightly later.
+The server's Model keeps the screen state too, so a re-render, a restore or another tab stays correct. It is only updated slightly later.
 
-## 1. Menus and popovers that open without a round trip
+## 1. Local effects: a closed vocabulary (implemented)
 
-**What:** render the menu's content closed but present, and open it with the browser's own Popover API: `popover` on the panel, `popovertarget` on the trigger, both attributes Foldkit already has. Opening and closing, Escape and clicking outside are then the browser's, with zero latency. CSS anchor positioning, which crease already uses, places it.
+`packages/core/src/local.ts` defines the effects the page script can run without a round trip:
 
-**Server side:**
-- The Model does not need to know the menu is open, for most menus.
-- Where it must (a picker whose filter runs on the server), the page posts a `toggle` event (`OnToggle`, already bound) after opening. The panel is already visible; the server catches up for what follows.
+| Effect | What it does |
+|---|---|
+| `{ show: '#id' }`, `{ hide: '#id' }`, `{ toggle: '#id' }` | `hidden` and `data-state` on a server-rendered element, `aria-expanded` on its `aria-controls` triggers |
+| `{ focus: '#id' }` | moves focus |
+| `{ showDialog: '#id', focus? }`, `{ closeDialog: '#id' }` | the dialog runtime of section 4 |
+| `{ select: { within, by, items?, attribute?, scroll? } }` | moves `data-selected` among a container's items |
 
-**Cost:**
-- Every menu's markup is in the page from the start, so pages are larger and renders do more.
-- Regions keep the cost per change low: a menu region is rendered once and kept until its items change.
-- For long pickers (all members, all labels), render the first page of items and let typing filter on the server, as today.
+A view attaches them to an event with `local(h, { click: [...] })`, a key binding with `local: [...]`. The page script runs them and then posts the event as usual, so the server's update sees the same Message it would have seen without them. A `select` effect adds the id of the newly selected element to the payload; the Linear clone maps it to an issue (`MovedSelection`) and ignores ids it does not know.
 
-**crease:** `dropdownMenu` and the clone's picker would get a `mode: 'popover'` (or a sibling component) that renders this way. Arrow keys inside the open popover stay server-side Submodel keys for now (one round trip each, as today). See section 2 for moving them into the browser.
+**Reconciliation:** every render carries the position of the last event the server applied (`_ha`). The page keeps its local operations until the server has applied the event that caused them and re-applies them after each morph, so a render the server produced before it saw the event cannot undo what the browser already shows. After that the server's markup is the authority again.
 
-**Effort:** small in core (`data-preserve-attr` for the popover's open state, so a morph never closes it). Medium in crease (a popover variant of the menu components).
+**Why a closed set:** each effect is a few lines of page script, tested once, and the view stays the single description of the page. The effects are JSON in a `data-hyper-local` attribute, parsed and never evaluated, so they add nothing to what the CSP has to allow. A general client-side expression language would split the app into two programs.
 
-## 2. Selection and focus that move in the browser
+## 2. Selection in the browser (implemented)
 
-**What:** a small declarative vocabulary for screen-only state, run by the page script, posting to the server afterwards. The first two cases cover most of what Linear needs:
-- **A roving selection over a list:** `j`/`k`/arrows move `data-selected` among the elements of a container, in the browser. The server learns the new selection with a debounced Message (`SelectionChanged { id }`), so it can act on `s`, `p` or Enter.
-- **Focus moves:** already instant, through `keyBindings` + forwarded focus; it only needs the selection to be local too.
+The Linear clone's `J`/`K`/arrow keys use `select` within `#issue-list`. The browser moves `data-selected` at once and posts `MovedSelection { elementId }`; the server sets `selectedId`, so `s`, `p` or Enter act on the right issue. Stories in `apps/linear-clone/test/issues.test.ts` cover the update; `scripts/check.mjs` covers the page.
 
-**API sketch:**
+## 3. Navigation within a session (implemented)
 
-```ts
-keyBindings(h, [
-  { keys: 'J', local: { moveSelection: { within: '#issue-list', by: 1 } }, message: ({ targetId }) => Message.Selected({ id: targetId }) },
-])
-```
+Following Foldkit's application programs (`onUrlChange`):
+- **One Program, several paths:** `Hyper.layer(program, { path, paths, ... })`. The Linear clone serves `/team/:team`, `/my-issues` and `/issues` from one `issues` Program.
+- **`Program.onUrlChange(request)`** turns the matched `PageRequest` into a Message (`ChangedUrl` in the clone), or fails with `PageNotFound` / `PageRedirect`, which become a page load.
+- **Links:** a same-origin link that matches one of the page's paths is taken on `mousedown`, posted to the session's `/nav` endpoint and pushed with `history.pushState`. Modified clicks, middle clicks, downloads, other targets and external links stay with the browser.
+- **Back/forward:** `popstate` posts the current URL the same way.
+- **`{ pushUrl }`** is a client action; `{ load }` navigates in the session when the URL matches the page's paths and loads the page otherwise.
+- The session keeps its stream, handler tables and snapshot. Programs without `onUrlChange` load pages as before.
 
-- `local` names an effect from a fixed set, so there is no arbitrary client code.
-- The page script performs it immediately and then posts the Message with the outcome (here the newly selected element's id).
-- The server applies it like any other event; its render agrees with what the browser already shows, so the morph changes nothing visible.
+**Prefetch:** `prefetch: ['/issue/*']` adds a speculation-rules script (`eagerness: 'moderate'`). A request with `Sec-Purpose: prefetch` (or `Purpose: prefetch`) is rendered from `flags` and `init` but registers no session and runs no init Commands; when the page is opened, its stream starts the session from the URL. A prefetch that is never used therefore leaves nothing behind (`packages/core/test/prefetch.test.ts`).
 
-**Why a fixed set:** each effect is a few lines of page script, tested once, and the view stays the single description of the page. A general client-side expression language would be Datastar's own, and it would split the app into two programs.
+## 4. Forwarded Commands that report back (implemented)
 
-**Risk:** the browser and the server can disagree for a moment (a key pressed while a morph arrives). The rule is the same as for client-owned inputs: the server does not overwrite what the browser just did until it has seen the browser's Message (sequence numbers already order this).
+A forwarding entry may name its replies: `{ action, replies: { ok, failed? } }`. The page performs the action and posts the reply; the server looks it up, lifts it through the Command's `mapMessage` chain and dispatches the root Message. `foldkitUiCommands` maps Foldkit UI's `ShowDialog`, `CloseDialog` and `ReleaseDialogResources`, so crease's styled dialog runs with its update on the server.
 
-**Effort:** medium in core (page script plus a `local` field on key bindings and on `OnClick`).
+The dialog runtime in the page script gives the styled markup what a modal needs: focus moves in and is trapped, Escape cancels, the rest of the page is `inert`, scroll is locked, focus returns on close, and a morph never closes an open dialog. The Linear clone's `?` opens the crease keyboard-shortcuts dialog this way.
 
-## 3. Navigation within a session
+Still to do: the compatibility check (`check:compat`) does not count a forwarded Command with replies as working yet, so sheet, drawer, alert-dialog and command-in-dialog are still listed as browser-only there.
 
-**What:** moving between views of one app (list ↔ board ↔ My issues ↔ an issue) without a page load, with the back button working.
+## 5. Optimistic changes (open)
 
-**Proposal**, following Foldkit's own application programs, which have `onUrlRequest` and `onUrlChange`:
-- **One program, several paths:** `Hyper.layer(program, { paths: ['/team/:team', '/my-issues', '/issue/:id'] })`. Today the same program needs one name per path (F13).
-- **Internal links** (`h.a` with a same-origin `href`) get a page-script handler: a click posts `UrlRequested { url }` instead of loading. Ctrl-click and middle-click still open a new tab normally.
-- **Two new client actions:**
-  - `{ pushUrl }`: `history.pushState`, for the server's answer;
-  - `{ load }`: for real page changes (already there).
-- **`popstate`** (back/forward) posts `UrlChanged { url }`.
-- The session stays, with its stream, handler tables and snapshot. The view for the new URL arrives as a normal morph (mostly region patches when the shell is unchanged).
-- Programs that stay one page per path need no change.
+For data changes, an optional optimistic hint: the binding names what the browser may show at once (a row's status icon), and the morph confirms or corrects it. It needs a per-component description of the predicted markup, which makes it the most complex item here and the least necessary: 100 ms for a status change is close to Linear's own sync. Measure with real users first.
 
-**Instant feel on top:** the page script can mark the clicked link as pending at once (`aria-busy`, already there) and the shell can stay. The content morph follows after one round trip, as Linear's own data loads do.
+## 6. Later: crease Submodels running in the browser
 
-**Effort:** medium in core (routing in the layer, two actions, the link and `popstate` bindings, session reuse across paths). It changes `Options`/`layer`, so decide before the 0.1 API freeze.
+The local effects cover open/close, focus and selection. They do not cover components whose screen state is richer: the Linear picker (its items depend on the issue and its filter runs on the server, so opening it is a round trip), a combobox, a date picker, a slider.
 
-## 4. Forwarded Commands that report back (dialogs, measuring)
+The longer-term answer is to run those crease Submodels in the browser with the same Foldkit code, and send only their OutMessages to the server:
+- the server renders the component as today, with its Model encoded in the page;
+- the browser hydrates that one Submodel and runs its update and view locally, with zero latency for everything inside it;
+- its OutMessages (`ChoseItem`, `Closed`, ...) are posted as Messages of the page, which is where data changes happen;
+- the page's Model keeps the Submodel's last reported state, so a restore re-renders it.
 
-**What:** today a forwarded Command's result Message is dropped. Foldkit UI's dialog cannot work that way: `ShowDialog` reports `SucceededShowDialog` / `FailedShowDialog`, and the dialog's update depends on it. Seven crease components (dialog, alert-dialog, sheet, drawer, command in a dialog, lightbox, mobile-nav) need it.
+This keeps the Elm architecture intact (one update per Submodel, Messages as facts) and removes the second "language" that local effects are. It is an island whose Model starts on the server, and it needs from Foldkit:
+- a public way to hydrate one Submodel from server-rendered markup and an encoded Model;
+- a stable boundary for OutMessages leaving a browser-run Submodel.
 
-**Proposal:**
-- A forwarding entry may name its result Messages: `{ showModal: '#id', reply: { ok: token(Succeeded), failed: token(Failed) } }`.
-- The page script performs the effect and posts the matching token as a normal event.
-- `<dialog>` elements get `data-preserve-attr="open"`, so a morph never closes a modal the browser opened.
-
-**Effort:**
-- small to medium in core;
-- add `ShowDialog` and `CloseDialog` to `foldkitUiCommands`;
-- extend the compatibility check to treat a forwarded Command with replies as working.
-
-## 5. Optimistic changes (later, if needed)
-
-For data changes, an optional optimistic hint: the binding names what the browser may show at once (for example a row's status icon). The morph confirms or corrects it.
-
-This needs a per-component description of the predicted markup. That is the most complex item here, and the least necessary: 100 ms for a status change is close to Linear's own sync. Measure with real users before building it.
-
-## Order and acceptance
-
-| # | Item | Changes the API? | Acceptance |
-|---|---|---|---|
-| 1 | Popover-based menus (core preserve + crease variant) | no (crease adds a mode) | clone pickers open in < 16 ms at 80 ms RTT |
-| 2 | Navigation within a session | yes: `paths`, two actions | list ↔ board ↔ issue without reload; back button works; check covers it |
-| 3 | Forwarded Commands with replies (dialogs) | small (`ClientAction` gains `reply`) | crease dialog, sheet, command open and close on a server; compat shows them working |
-| 4 | Local selection effects | yes: `local` on key bindings and clicks | `j`/`k` in < 16 ms at 80 ms RTT; server agrees after its Message |
-| 5 | Optimistic hints | yes | only after measuring with users |
-
-**Recommendation:** 1 and 3 first (small, no API risk, they unblock crease's overlays). Then 2 before the API freeze, because it changes `layer`. Then 4. Leave 5 open.
-
-**Every item is measured the same way:** the clone's `measure.mjs` through the shaping proxy at 80 ms RTT, before and after.
+Until Foldkit offers those, local effects are the narrow, tested way to keep screen-only state off the network.
