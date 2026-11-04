@@ -255,6 +255,28 @@ try {
   await ada.page.keyboard.press('Escape')
   check('Esc on an issue goes back to its list', await ada.page.waitForURL('**/team/ENG', { timeout: TIMEOUT }).then(() => true, () => false))
 
+  // j moves the selection in the page itself (a local effect), before the
+  // server has seen the key; the server then agrees.
+  await ada.page.waitForFunction(() => document.querySelector('#hyper-keys[data-hyper-keys]') !== null)
+  await settle(ada.page)
+  const moved = await ada.page.evaluate(() => {
+    const before = document.querySelector('#issue-list [data-selected="true"]')?.id
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+    const after = document.querySelector('#issue-list [data-selected="true"]')?.id
+    return after !== undefined && after !== before ? after : undefined
+  })
+  check('j moves the selection before the server answers', moved !== undefined)
+  await settle(ada.page)
+  check('the server agrees with the moved selection', await ada.page.evaluate(id => document.querySelector('#issue-list [data-selected="true"]')?.id === id, moved))
+
+  // ? opens the shortcuts dialog: a styled crease dialog whose ShowDialog
+  // runs in the page and replies to the server.
+  await ada.page.keyboard.press('Shift+?')
+  check('? opens the styled shortcuts dialog with focus inside', await until(ada.page, () => document.querySelector('#shortcuts-help')?.open === true && document.activeElement?.closest('#shortcuts-help') != null))
+  check('the rest of the page is inert while it is open', await ada.page.evaluate(() => document.querySelector('#issue-list')?.closest('[inert]') != null))
+  await ada.page.keyboard.press('Escape')
+  check('Esc closes it and the page is usable again', await until(ada.page, () => document.querySelector('#shortcuts-help')?.open === false && document.querySelector('[inert]') === null))
+
   // The ⋯ menu (crease dropdown-menu, activateOnHover: false): hover is CSS,
   // so moving over its items sends nothing; choosing an item works.
   await visit(ada.page, `/issue/${toOpen}`)

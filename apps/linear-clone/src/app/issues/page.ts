@@ -9,6 +9,8 @@ import { PageNotFound, type PageRequest, type Program, keyBindings, memoizeLast,
 import * as Icon from '@/lib/icon'
 import { cn } from '@/lib/utils'
 import { button } from '@/ui/button'
+import * as Dialog from '@/ui/dialog'
+import { kbd } from '@/ui/kbd'
 import { input } from '@/ui/input'
 import { renderTextarea } from '@/lib/textarea'
 
@@ -101,6 +103,8 @@ export const Model = S.Struct({
   dragging: S.NullOr(S.String),
   dropTarget: S.NullOr(Status),
   seq: S.Number,
+  /** The keyboard shortcuts dialog (`?`), a crease dialog. */
+  help: Dialog.Model,
 })
 export type Model = typeof Model.Type
 
@@ -138,6 +142,7 @@ export const Message = defineMessageUnion({
   PressedShortcut: { shortcut: Shortcut, targetId: S.String },
   /** The page already moved the selection to this row (a local effect). */
   MovedSelection: { elementId: S.String },
+  GotHelpDialog: { message: Dialog.Message },
   GotWorkspace: { members: S.Array(Member), issues: S.Array(Issue) },
   SucceededCreate: { id: S.String, identifier: S.String },
   FailedCreate: { reason: S.String },
@@ -168,6 +173,8 @@ export const ClientMessage = S.Union([
   Message.EnteredColumn,
   Message.DroppedOnColumn,
   Message.EndedDrag,
+  // The dialog's own bindings; its Command results never come from the page.
+  S.TaggedStruct('GotHelpDialog', { message: Dialog.Message.RequestedClose }),
 ])
 export type ClientMessage = typeof ClientMessage.Type
 
@@ -277,6 +284,7 @@ export const init = (flags: Flags): Update.Return<Model, Message, Workspace> => 
     dragging: null,
     dropTarget: null,
     seq: 0,
+    help: Dialog.init({ id: 'shortcuts-help' }),
   }
   return flags.isCreating ? openDraft(model, null) : { model }
 }
@@ -563,7 +571,9 @@ const onShortcut = (model: Model, shortcut: Shortcut, targetId: string): UpdateR
         ? { model: { ...model, picker: null } }
         : openPicker({ ...model, draft: model.draft }, Picker.open('command', 'palette', [], null))
     case 'escape':
-      return model.picker !== null
+      return model.help.isOpen
+        ? withHelp(model, Dialog.close(model.help))
+        : model.picker !== null
         ? { model: { ...model, picker: null } }
         : model.draft !== null
           ? { model: { ...model, draft: null } }
@@ -578,8 +588,15 @@ const onShortcut = (model: Model, shortcut: Shortcut, targetId: string): UpdateR
       return { model, commands: [LoadUrl({ url: '/team/DES' })] }
     case 'toggleLayout':
       return withQuery(model, { ...model.query, layout: model.query.layout === 'board' ? 'list' : 'board' })
+    case 'help':
+      return withHelp(model, Dialog.open(model.help))
   }
 }
+
+const withHelp = (model: Model, helpUpdate: ReturnType<typeof Dialog.update>): UpdateReturn => ({
+  model: { ...model, help: helpUpdate.model },
+  commands: Command.mapMessages(helpUpdate.commands, message => Message.GotHelpDialog({ message })),
+})
 
 const submitDraft = (model: Model): UpdateReturn => {
   const draft = model.draft
@@ -671,6 +688,7 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
       },
       EndedDrag: () => ({ model: { ...model, dragging: null, dropTarget: null } }),
       PressedShortcut: ({ shortcut, targetId }) => onShortcut(model, shortcut, targetId),
+      GotHelpDialog: ({ message }) => withHelp(model, Dialog.update(model.help, message)),
       MovedSelection: ({ elementId }) => {
         const issue = navigationOrder(model).find(candidate => `row-${candidate.identifier}` === elementId)
         return { model: issue === undefined ? model : { ...model, selectedId: issue.id } }
@@ -1359,12 +1377,49 @@ const filterField = (value: string): Picker.PickerField => {
   return dimension === 'status' ? 'status' : dimension === 'priority' ? 'priority' : dimension === 'assignee' ? 'assignee' : 'labels'
 }
 
+const HELP_SHORTCUTS: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+  [['J', 'K'], 'Move the selection'],
+  [['Enter'], 'Open the selected issue'],
+  [['C'], 'Create an issue'],
+  [['S'], 'Change status'],
+  [['P'], 'Change priority'],
+  [['A'], 'Change assignee'],
+  [['L'], 'Change labels'],
+  [['/'], 'Search'],
+  [['⌘', 'K'], 'Command palette'],
+  [['G', 'M'], 'Go to My issues'],
+  [['⌘', 'B'], 'Switch list and board'],
+  [['?'], 'Show these shortcuts'],
+]
+
+const helpDialog = (help: Dialog.Model, h: HtmlBuilder<Message>): Html =>
+  Dialog.dialog(
+    {
+      model: help,
+      toParentMessage: message => Message.GotHelpDialog({ message }),
+      title: 'Keyboard shortcuts',
+      description: 'Available on every issue list.',
+      content: () => [
+        h.ul(
+          [h.Class('flex flex-col gap-2 text-sm')],
+          HELP_SHORTCUTS.map(([keys, label]) =>
+            h.li(
+              [h.Class('flex items-center justify-between gap-4')],
+              [h.span([], [label]), h.span([h.Class('flex gap-1')], keys.map(key => kbd({ children: [key] }, h)))],
+            ),
+          ),
+        ),
+      ],
+    },
+    h,
+  )
+
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   const visible = visibleIssues(model)
   const groups = groupsOf(visible, model.query.layout)
   const navCounts = counts(model)
   const active = activeHref(model)
-  const hasOverlay = model.picker !== null || model.draft !== null
+  const hasOverlay = model.picker !== null || model.draft !== null || model.help.isOpen
   return {
     title: `${scopeTitle(model.scope)} · Linear`,
     body: h.div(
@@ -1399,6 +1454,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
             }),
           ],
         ),
+        region(h, { id: 'help', deps: [model.help], render: () => h.div([h.Id('help')], [helpDialog(model.help, h)]) }),
         region(h, {
           id: 'new-issue-root',
           deps: [model.draft, model.members],

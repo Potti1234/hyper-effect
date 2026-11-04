@@ -27,6 +27,7 @@ export const Shortcut = S.Literals([
   'goEngineering',
   'goDesign',
   'toggleLayout',
+  'help',
 ])
 export type Shortcut = typeof Shortcut.Type
 
@@ -78,6 +79,7 @@ export const shortcutBindings = <Message>(
     { keys: ['G', 'E'], isEnabled: !hasOverlay, message: press('goEngineering') },
     { keys: ['G', 'D'], isEnabled: !hasOverlay, message: press('goDesign') },
     { keys: 'Mod+B', message: press('toggleLayout') },
+    { keys: 'Shift+?', isEnabled: !hasOverlay, message: press('help') },
     { keys: 'Mod+K', whileTyping: 'Allow', message: press('palette') },
     { keys: 'Escape', whileTyping: 'Allow', message: press('escape') },
     { keys: 'Mod+Enter', whileTyping: 'Allow', message: press('submit') },
