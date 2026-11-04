@@ -1,0 +1,35 @@
+{
+  "name": "starter",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Starter: a hyper-effect app.",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run css && tsx watch src/main.ts",
+    "start": "npm run css && node --import tsx src/main.ts",
+    "css": "tailwindcss -i src/styles.css -o public/styles.css",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "node scripts/check.mjs"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0",
+    "@foldkit/ui": "0.165.0",
+    "@hyper-effect/core": "*",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "effect": "4.0.0",
+    "foldkit": "0.165.0",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0",
+    "@tailwindcss/cli": "^4.3.1",
+    "@types/node": "^22.0.0",
+    "playwright": "1.62.1",
+    "tailwindcss": "^4.3.1",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}
