@@ -1,10 +1,10 @@
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
-import type { Binder } from './binding'
-import { binderOf, withBinder } from './builder'
-import { sameDeps } from './deps'
-import { serializeHtml } from './foldkit-internal'
-import { withRegions } from './region'
+import type { Binder } from './binding.ts'
+import { binderOf, withBinder } from './builder.ts'
+import { sameDeps } from './deps.ts'
+import { serializeHtml } from './foldkit-internal.ts'
+import { withRegions } from './region.ts'
 
 /* Render once, serve many. Every live page re-renders on every shared change,
    so markup that depends only on shared data (the incident list, a

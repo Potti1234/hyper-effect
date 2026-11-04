@@ -33,15 +33,15 @@ import {
   SEQUENCE_SIGNAL,
   UPLOAD,
   UPLOAD_PATH,
-} from './binding'
-import { DISMISS_EVENT, LOCAL, LOCAL_ATTRIBUTE } from './local'
-import * as Compression from './compression'
-import { heartbeat, patchElements, patchSignals, runOnce } from './datastar'
-import * as Metrics from './metrics'
-import { matchPath, type PageRequest, type Program } from './program'
-import { sameDeps } from './deps'
-import * as Security from './security'
-import * as Session from './session'
+} from './binding.ts'
+import { DISMISS_EVENT, LOCAL, LOCAL_ATTRIBUTE } from './local.ts'
+import * as Compression from './compression.ts'
+import { heartbeat, patchElements, patchSignals, runOnce } from './datastar.ts'
+import * as Metrics from './metrics.ts'
+import { matchPath, type PageRequest, type Program } from './program.ts'
+import { sameDeps } from './deps.ts'
+import * as Security from './security.ts'
+import * as Session from './session.ts'
 
 /** What a request carries for authentication. */
 export type RequestContext = Pick<PageRequest, 'cookies' | 'headers' | 'visitorId'>

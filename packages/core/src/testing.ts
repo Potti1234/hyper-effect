@@ -2,8 +2,8 @@ import { Context, Effect, Layer } from 'effect'
 import { HttpRouter, HttpServer } from 'effect/http'
 import { KeyValueStore } from 'effect/persistence'
 
-import type { Program } from './program'
-import * as Hyper from './server'
+import type { Program } from './program.ts'
+import * as Hyper from './server.ts'
 
 /* Helpers for driving `Hyper.layer` through a web handler, the way a browser
    would: a page GET sets the visitor cookie, and session requests carry it
@@ -121,5 +121,5 @@ export const waitForSnapshot = async (
 }
 
 /** Renders a Model the way a session does, for view tests. */
-export { renderModel } from './session'
-export type { Binder } from './binding'
+export { renderModel } from './session.ts'
+export type { Binder } from './binding.ts'

@@ -1,9 +1,9 @@
 import { Duration, Option } from 'effect'
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
-import { type Binder, ENDPOINT_SIGNAL, KEYS, PENDING_INPUTS, SEQUENCE_SIGNAL } from './binding'
-import { binderOf } from './builder'
-import type { LocalEffect } from './local'
+import { type Binder, ENDPOINT_SIGNAL, KEYS, PENDING_INPUTS, SEQUENCE_SIGNAL } from './binding.ts'
+import { binderOf } from './builder.ts'
+import type { LocalEffect } from './local.ts'
 
 /* Global key bindings: keyboard shortcuts for the whole page, matched in the
    browser.

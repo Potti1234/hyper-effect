@@ -9,3 +9,5 @@ output/
 .DS_Store
 *.log
 *.cpuprofile
+# package builds (npm run build)
+packages/*/dist/

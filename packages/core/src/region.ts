@@ -1,10 +1,10 @@
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
-import { assertNoDroppedHandlers, binderOf, withBinder } from './builder'
-import { registerGauge } from './metrics'
-import { sameDeps } from './deps'
-import { serializeHtml } from './foldkit-internal'
-import { collectShared, fillShared, sessionIndependent } from './shared'
+import { assertNoDroppedHandlers, binderOf, withBinder } from './builder.ts'
+import { registerGauge } from './metrics.ts'
+import { sameDeps } from './deps.ts'
+import { serializeHtml } from './foldkit-internal.ts'
+import { collectShared, fillShared, sessionIndependent } from './shared.ts'
 
 /* Regions: render and send only what changed.
 

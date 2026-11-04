@@ -1,7 +1,7 @@
 import { Schema } from 'effect'
 import { Runtime } from 'foldkit'
 
-import { ISLAND_EVENT, type IslandSpec, PROPS_ATTRIBUTE } from './contract'
+import { ISLAND_EVENT, type IslandSpec, PROPS_ATTRIBUTE } from './contract.ts'
 
 /* Browser side of an island: a custom element that boots a Foldkit program
    with `Runtime.embed`, feeds `data-props` changes into its `props` inbound

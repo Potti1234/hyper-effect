@@ -7,7 +7,7 @@ import type { Attribute, Html, HtmlBuilder } from 'foldkit/html'
 import { rewriteAttributes } from '@hyper-effect/core/binding'
 import { binderOf } from '@hyper-effect/core/builder'
 
-import { ISLAND_EVENT, type IslandSpec, PROPS_ATTRIBUTE } from './contract'
+import { ISLAND_EVENT, type IslandSpec, PROPS_ATTRIBUTE } from './contract.ts'
 
 export type IslandViewConfig<Props, Event, Message> = Readonly<{
   /** Stable id: morphs keep the island alive by matching it. */

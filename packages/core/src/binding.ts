@@ -1,6 +1,6 @@
 import { Option } from 'effect'
 
-import { LOCAL, LOCAL_ATTRIBUTE, eventOfBinding } from './local'
+import { LOCAL, LOCAL_ATTRIBUTE, eventOfBinding } from './local.ts'
 import type {
   Attribute,
   ChildAttribute,

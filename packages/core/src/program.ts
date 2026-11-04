@@ -3,7 +3,7 @@ import type { Document, HtmlBuilder } from 'foldkit/html'
 import type { Subscriptions } from 'foldkit/subscription'
 import type { Return } from 'foldkit/update'
 
-import type { ClientCommands } from './client-commands'
+import type { ClientCommands } from './client-commands.ts'
 
 /** The request a page is rendered for: the full URL, the path parameters
  *  matched by the program's path pattern, a stable id for the browser (an
