@@ -67,6 +67,14 @@ export interface Program<
    *  on it (presence, expensive feeds). A session outlives its connection by
    *  the idle timeout. */
   readonly onConnectionChange?: (isConnected: boolean) => Message
+  /** Navigation within the session: the browser went to another URL that
+   *  this program serves (a link, back/forward, a `load` Command), and this
+   *  turns it into a Message instead of loading a new page. Like `flags` it
+   *  may read the request and fail with PageNotFound or PageRedirect, which
+   *  load the URL as a page. Without it every URL change is a page load. */
+  readonly onUrlChange?: (
+    request: PageRequest,
+  ) => Effect.Effect<Message, PageNotFound | PageRedirect, R>
   /** Browser-only Commands to forward to the page instead of running them
    *  (see `client-commands.ts`); Foldkit UI's focus Commands are built in. */
   readonly clientCommands?: ClientCommands

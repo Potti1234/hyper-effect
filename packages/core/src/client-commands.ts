@@ -26,8 +26,12 @@ export type ClientAction =
   /** `history.replaceState` to a URL of the same origin: in-page state
    *  (a page number, a filter) reflected in the address bar. */
   | Readonly<{ replaceUrl: string }>
-  /** Navigates to a URL of the same origin, as Foldkit's `Navigation.load`. */
+  /** Navigates to a URL of the same origin, as Foldkit's `Navigation.load`.
+   *  A URL the program serves with `onUrlChange` stays in the session. */
   | Readonly<{ load: string }>
+  /** `history.pushState` to a URL of the same origin, for a navigation the
+   *  update has already made (the Model shows the new place). */
+  | Readonly<{ pushUrl: string }>
   /** Clicks an element, as Foldkit's `Dom.clickElement`: Foldkit UI commits a
    *  keyboard-chosen item (Enter in a combobox, listbox or menu) by clicking
    *  it, so the item's own click binding posts the selection. */

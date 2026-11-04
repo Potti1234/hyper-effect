@@ -49,6 +49,11 @@ export type RequestContext = Pick<PageRequest, 'cookies' | 'headers' | 'visitorI
 export type Options<R = never> = Readonly<{
   /** Path pattern of the page, such as `/incidents/:id`. Defaults to `/`. */
   path?: string
+  /** More patterns the same program serves. With the program's
+   *  `onUrlChange`, the page moves between all of them within one session
+   *  (links are taken on mousedown, back and forward work); each is also a
+   *  page of its own. */
+  paths?: ReadonlyArray<string>
   /** Stylesheets linked from the page head. */
   stylesheets?: ReadonlyArray<string>
   /** Module scripts loaded by the page, such as an islands bundle. */
@@ -163,6 +168,7 @@ const RUN_ACTIONS = 'hyperRunActions'
 /** Signal carrying the intake position of each render (local effects). */
 const APPLIED_SIGNAL = '_ha'
 const APPLIED = 'hyperApplied'
+const NAVIGATE_PATH = '/nav'
 const NAVIGATE = 'hyperNavigate'
 const VISITOR_COOKIE = 'hyper-visitor'
 const VISITOR_MAX_AGE = 60 * 60 * 24 * 365
@@ -418,6 +424,59 @@ const CLIENT_SCRIPT = `(() => {
     fetch(endpoint, { method: 'POST', credentials: 'same-origin', headers: { 'Datastar-Request': 'true', 'Content-Type': 'application/json' }, body: JSON.stringify({ r: id, o: outcome }) })
       .catch(() => console.warn('hyper-effect: reply failed'))
   }
+  // Navigation within the session (onUrlChange): links to URLs the program
+  // serves are taken on mousedown (the server starts before the click ends),
+  // the address bar follows on click, and back/forward post the URL again.
+  // Modified clicks, other targets and downloads stay with the browser.
+  const control = () => document.getElementById('${CONTROL_ID}')
+  const inSession = url => {
+    const paths = control()?.getAttribute('data-hyper-paths')
+    if (!paths || url.origin !== location.origin) return false
+    const parts = url.pathname.split('/').filter(part => part !== '')
+    return JSON.parse(paths).some(pattern => {
+      const patternParts = pattern.split('/').filter(part => part !== '')
+      return patternParts.length === parts.length && patternParts.every((part, index) => part.startsWith(':') || part === parts[index])
+    })
+  }
+  const navigateInSession = url => {
+    const endpoint = control()?.getAttribute('data-hyper-endpoint')
+    if (!endpoint) { location.assign(url.href); return }
+    fetch(endpoint + '${NAVIGATE_PATH}', { method: 'POST', credentials: 'same-origin', headers: { 'Datastar-Request': 'true', 'Content-Type': 'application/json' }, body: JSON.stringify({ u: url.pathname + url.search }) })
+      .then(async response => {
+        if (response.status === 204) return
+        const answer = response.status === 200 ? await response.json() : {}
+        location.assign(typeof answer.load === 'string' ? answer.load : url.href)
+      })
+      .catch(() => location.assign(url.href))
+  }
+  const linkOf = evt => {
+    if (evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey || evt.defaultPrevented) return null
+    const anchor = evt.target instanceof Element ? evt.target.closest('a[href]') : null
+    if (!anchor || (anchor.target && anchor.target !== '_self') || anchor.hasAttribute('download') || anchor.hasAttribute('data-hyper-reload')) return null
+    const url = new URL(anchor.href, location.href)
+    return inSession(url) ? url : null
+  }
+  let pressedLink = null
+  document.addEventListener('mousedown', evt => {
+    const url = linkOf(evt)
+    pressedLink = url && url.href !== location.href ? url : null
+    if (pressedLink) navigateInSession(pressedLink)
+  })
+  document.addEventListener('click', evt => {
+    const url = linkOf(evt)
+    if (!url) return
+    evt.preventDefault()
+    if (url.href !== location.href) {
+      history.pushState(null, '', url.href)
+      if (pressedLink?.href !== url.href) navigateInSession(url)
+    }
+    pressedLink = null
+  })
+  // Pressed but dragged away: the page stays where the address bar is.
+  document.addEventListener('dragstart', () => {
+    if (pressedLink) { pressedLink = null; navigateInSession(new URL(location.href)) }
+  })
+  window.addEventListener('popstate', () => { if (inSession(new URL(location.href))) navigateInSession(new URL(location.href)); else location.reload() })
   const sameOrigin = url => { try { return new URL(url, location.href).origin === location.origin } catch { return false } }
   let lastActions = ''
   window.${RUN_ACTIONS} = (json, endpoint) => {
@@ -427,7 +486,11 @@ const CLIENT_SCRIPT = `(() => {
       if (action.focus) focusIfStillThere(action.focus)
       if (action.scrollIntoView) document.querySelector(action.scrollIntoView)?.scrollIntoView({ block: 'nearest' })
       if (action.replaceUrl && sameOrigin(action.replaceUrl)) history.replaceState(history.state, '', action.replaceUrl)
-      if (action.load && sameOrigin(action.load)) location.assign(action.load)
+      if (action.pushUrl && sameOrigin(action.pushUrl)) history.pushState(null, '', action.pushUrl)
+      if (action.load && sameOrigin(action.load)) {
+        const url = new URL(action.load, location.href)
+        if (inSession(url)) { history.pushState(null, '', url.href); navigateInSession(url) } else location.assign(url.href)
+      }
       if (action.click) document.querySelector(action.click)?.click()
       if (action.showDialog) reply(endpoint, action.reply, showDialog(document.querySelector(action.showDialog), action.focus) ? 'ok' : 'failed')
       if (action.closeDialog) { closeDialog(document.querySelector(action.closeDialog)); reply(endpoint, action.reply, 'ok') }
@@ -603,6 +666,7 @@ type Restored<Model, Message> =
 const refused = { _tag: 'Refused' } as const
 
 const decodePayload = Schema.decodeUnknownEffect(Session.EventPayload)
+const decodeNavigation = Schema.decodeUnknownEffect(Schema.Struct({ u: Schema.String }))
 const decodePendingInputs = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 )
@@ -711,7 +775,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         }
         return { sessions: sessions.size, connections, handlerTables, regions }
       })
-      const path = options.path ?? '/'
+      const patterns = [options.path ?? '/', ...(options.paths ?? [])]
       const idleTimeout = Duration.toMillis(
         Duration.fromInputUnsafe(options.idleTimeout ?? '2 minutes'),
       )
@@ -726,7 +790,9 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         visitorId: string,
         request: HttpServerRequest.HttpServerRequest,
       ): Option.Option<PageRequest> =>
-        Option.fromNullishOr(matchPath(path, url.pathname)).pipe(
+        Option.fromNullishOr(
+          patterns.map(pattern => matchPath(pattern, url.pathname)).find(params => params !== undefined),
+        ).pipe(
           Option.map(params => ({
             url,
             params,
@@ -1008,17 +1074,20 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           ),
           '</head>',
           '<body>',
-          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')"></div>`,
+          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')" data-hyper-endpoint="${endpoint(id)}"${
+            program.onUrlChange === undefined ? '' : ` data-hyper-paths="${escapeAttribute(JSON.stringify(patterns))}"`
+          }></div>`,
           rendered.html,
           '</body>',
           '</html>',
         ].join('\n')
       }
 
+      for (const pattern of patterns) {
       yield* router.add(
         'GET',
         /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
-        path as HttpRouter.PathInput,
+        pattern as HttpRouter.PathInput,
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest
           const url = new URL(request.url, 'http://localhost')
@@ -1081,6 +1150,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           ),
         ),
       )
+      }
 
       yield* router.add(
         'GET',
@@ -1248,6 +1318,60 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           if (Object.keys(payload.p ?? {}).length > limits.maxPendingInputs) return refuse(400)
           yield* entry.session.receive(payload)
           if (durableEvents) yield* saveSnapshot(entry)
+          entry.lastSeen = Date.now()
+          return refuse(204)
+        }).pipe(Effect.catch(() => Effect.succeed(refuse(400)))),
+      )
+
+      // Navigation within the session (`onUrlChange`): the page posts the
+      // URL it went to. 204: the session took it; `{ load }`: load a page.
+      yield* router.add(
+        'POST',
+        `/_hyper/${program.name}/s/:id${NAVIGATE_PATH}`,
+        Effect.gen(function* () {
+          const { id = '' } = yield* HttpRouter.params
+          const request = yield* HttpServerRequest.HttpServerRequest
+          const visitorId = request.cookies[VISITOR_COOKIE]
+          if (!SESSION_ID.test(id)) return refuse(400)
+          if (
+            request.headers['datastar-request'] !== 'true' ||
+            visitorId === undefined ||
+            !Security.isSameSite(request, allowedOrigins, trustProxy)
+          ) {
+            return refuse(403)
+          }
+          const principal = yield* principalOf(request, visitorId)
+          const found = yield* find(id, request, Option.none(), visitorId, principal)
+          if (found._tag === 'Forbidden') return refuse(403)
+          if (found._tag !== 'Restored') return refuse(410)
+          const entry = found.entry
+          if (entry.principal !== principal) {
+            yield* close(id, entry)
+            return refuse(410)
+          }
+          if (!Security.take(entry.events, limits.eventsPerSecond, limits.eventBurst, Date.now())) {
+            return refuse(429)
+          }
+          const { u } = yield* request.json.pipe(
+            Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(limits.maxBodyBytes)),
+            Effect.flatMap(decodeNavigation),
+          )
+          // A path of this origin only; anything else is not a navigation.
+          if (!u.startsWith('/') || u.startsWith('//')) return refuse(400)
+          const load = (location: string) => HttpServerResponse.jsonUnsafe({ load: location })
+          const onUrlChange = program.onUrlChange
+          const page = pageRequest(new URL(u, 'http://localhost'), visitorId, request)
+          if (onUrlChange === undefined || Option.isNone(page)) return load(u)
+          const changed = yield* onUrlChange(page.value).pipe(
+            Effect.provideContext(services),
+            Effect.map(message => ({ _tag: 'Message' as const, message })),
+            Effect.catchTags({
+              PageNotFound: () => Effect.succeed({ _tag: 'Load' as const, location: u }),
+              PageRedirect: ({ location }) => Effect.succeed({ _tag: 'Load' as const, location }),
+            }),
+          )
+          if (changed._tag === 'Load') return load(changed.location)
+          yield* entry.session.dispatch(changed.message)
           entry.lastSeen = Date.now()
           return refuse(204)
         }).pipe(Effect.catch(() => Effect.succeed(refuse(400)))),
