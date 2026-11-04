@@ -1,0 +1,26 @@
+{
+  "name": "@hyper-effect/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Server-side Foldkit programs on Effect, driven by Datastar: sessions, rendering, event binding, HTTP routes.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./binding": "./src/binding.ts",
+    "./builder": "./src/builder.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "effect": "4.0.0",
+    "foldkit": "0.165.0"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.0",
+    "@effect/sql-pg": "4.0.0",
+    "effect": "4.0.0",
+    "foldkit": "0.165.0"
+  }
+}
