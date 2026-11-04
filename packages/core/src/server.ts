@@ -1195,8 +1195,11 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           const rendered = yield* entry.session.render
           const nonce = Security.makeNonce()
           return withVisitor(
+            // The page names a live session and starts its events at 1; a copy
+            // reloaded from the HTTP cache (history navigation) would replay
+            // sequence numbers the session has already applied.
             HttpServerResponse.html(page(rendered, entry.session.id, url, nonce)).pipe(
-              HttpServerResponse.setHeaders(securityHeaders(nonce)),
+              HttpServerResponse.setHeaders({ ...securityHeaders(nonce), 'cache-control': 'no-store' }),
             ),
           )
         }).pipe(

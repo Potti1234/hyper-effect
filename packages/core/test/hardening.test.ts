@@ -137,6 +137,20 @@ describe('authentication', () => {
   })
 })
 
+// PAGE CACHING
+
+describe('page caching', () => {
+  it('keeps a live page out of the HTTP cache, so history never replays its session', async () => {
+    const server = serve({ ...Greeter.program, name: 'caching' }, {})
+    try {
+      const response = await get(server.handler, '/')
+      assert.strictEqual(response.headers.get('cache-control'), 'no-store')
+    } finally {
+      await server.dispose()
+    }
+  })
+})
+
 // CONTENT SECURITY POLICY
 
 describe('content security policy', () => {

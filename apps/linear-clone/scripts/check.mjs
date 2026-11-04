@@ -129,6 +129,23 @@ try {
   await ada.page.goBack()
   check('back returns to the team list in the same session', await ada.page.waitForURL('**/team/ENG', { timeout: TIMEOUT }).then(() => true, () => false) && await until(ada.page, () => document.querySelector('#issue-list [id^="row-ENG-"]') !== null && document.querySelector('#issue-list [id^="row-DES-"]') === null && window.hyperCheckMarker === true))
 
+  // An issue page, then back: the list is a fresh page (never a cached copy
+  // replaying the old session's event numbers), so shortcuts still work.
+  await ada.page.keyboard.press('j')
+  await settle(ada.page)
+  await ada.page.keyboard.press('Enter')
+  await ada.page.waitForURL('**/issue/**', { timeout: TIMEOUT })
+  await settle(ada.page)
+  const reopened = ada.page.waitForRequest(request => request.url().includes('/stream'))
+  await ada.page.goBack()
+  await reopened
+  await settle(ada.page)
+  await ada.page.keyboard.press('j')
+  await ada.page.keyboard.press('s')
+  check('after an issue page and back, s opens the status picker', await until(ada.page, () => document.activeElement?.id === 'picker-input'))
+  await ada.page.keyboard.press('Escape')
+  await until(ada.page, () => document.querySelector('#picker') === null)
+
   // CREATE ISSUE
   await ada.page.keyboard.press('c')
   check('c opens the new issue dialog with the title focused', await until(ada.page, () => document.activeElement?.id === 'draft-title'))
