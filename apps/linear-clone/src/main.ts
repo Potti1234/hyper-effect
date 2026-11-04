@@ -1,0 +1,54 @@
+import { NodeHttpServer, NodeRuntime, NodeServices } from '@effect/platform-node'
+import { Layer } from 'effect'
+import { HttpRouter, HttpServerResponse } from 'effect/http'
+import { createServer } from 'node:http'
+import { fileURLToPath } from 'node:url'
+
+import * as Hyper from '@hyper-effect/core'
+
+import * as Auth from '@/app/auth'
+import * as IssuePage from '@/app/issue/page'
+import * as Issues from '@/app/issues/page'
+import * as Store from '@/app/store'
+
+/* The server: one hyper-effect layer per page, plain routes for sign-in and
+   static files, the app's services, and the session snapshot store.
+
+   Environment:
+   - PORT (default 4100)
+   - APP_SECRET signs the sign-in cookie; HYPER_SNAPSHOT_SECRET seals session
+     snapshots. Both have development values in the source: set them
+     everywhere else. */
+
+const port = Number(process.env['PORT'] ?? 4100)
+const publicFile = (path: string) => fileURLToPath(new URL(`../public/${path}`, import.meta.url))
+
+const page: Hyper.Options = {
+  stylesheets: ['/styles.css'],
+  // Sessions belong to the signed-in user; signing out ends them.
+  principal: Auth.principal,
+  snapshotSecret: process.env['HYPER_SNAPSHOT_SECRET'] ?? 'dev-snapshot-secret, set HYPER_SNAPSHOT_SECRET',
+}
+
+const Routes = Layer.mergeAll(
+  Hyper.layer(Issues.teamProgram, { ...page, path: '/team/:team' }),
+  Hyper.layer(Issues.myIssuesProgram, { ...page, path: '/my-issues' }),
+  Hyper.layer(Issues.allIssuesProgram, { ...page, path: '/issues' }),
+  Hyper.layer(IssuePage.program, { ...page, path: '/issue/:identifier' }),
+  HttpRouter.add('GET', '/', HttpServerResponse.redirect('/team/ENG', { status: 303 })),
+  Auth.routes,
+  HttpRouter.add('GET', '/styles.css', HttpServerResponse.file(publicFile('styles.css'), { contentType: 'text/css' })),
+)
+
+HttpRouter.serve(Routes).pipe(
+  Layer.provide([
+    Store.layer,
+    // Session snapshots on disk: restart the server and open pages carry on.
+    // Several machines: Hyper.sqlStore() on Postgres instead.
+    Hyper.fileStore('.hyper-sessions'),
+  ]),
+  Layer.provide(NodeServices.layer),
+  Layer.provide(NodeHttpServer.layer(createServer, { port })),
+  Layer.launch,
+  NodeRuntime.runMain,
+)
