@@ -298,6 +298,12 @@ const CLIENT_SCRIPT = `(() => {
       }
     }
   }
+  // Focus can move into a dialog before showDialog runs (the opening render),
+  // so remember the last element focused outside any dialog to return to.
+  let outsideFocus = null
+  document.addEventListener('focusin', evt => {
+    if (evt.target instanceof HTMLElement && !evt.target.closest('dialog')) outsideFocus = evt.target
+  })
   const showDialog = (el, focusSelector) => {
     if (!(el instanceof HTMLDialogElement) || !el.id) return false
     el.style.position = 'fixed'
@@ -320,7 +326,7 @@ const CLIENT_SCRIPT = `(() => {
       }
     }
     document.addEventListener('keydown', onKey)
-    dialogs.set(el.id, { onKey, returnFocus: active instanceof HTMLElement && active !== document.body ? active : null })
+    dialogs.set(el.id, { onKey, returnFocus: active instanceof HTMLElement && active !== document.body && !el.contains(active) ? active : outsideFocus })
     dialogStack = [...dialogStack.filter(id => id !== el.id), el.id]
     isolate()
     const requested = focusSelector ? el.querySelector(focusSelector) : null
@@ -334,7 +340,8 @@ const CLIENT_SCRIPT = `(() => {
     dialogs.delete(id)
     dialogStack = dialogStack.filter(other => other !== id)
     isolate()
-    if (held.returnFocus?.isConnected) held.returnFocus.focus()
+    const target = held.returnFocus?.isConnected ? held.returnFocus : held.returnFocus?.id ? document.getElementById(held.returnFocus.id) : null
+    target?.focus()
     return true
   }
   const closeDialog = el => {

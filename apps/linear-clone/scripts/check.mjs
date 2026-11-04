@@ -286,11 +286,13 @@ try {
 
   // ? opens the shortcuts dialog: a styled crease dialog whose ShowDialog
   // runs in the page and replies to the server.
+  await ada.page.focus('#layout-list')
   await ada.page.keyboard.press('Shift+?')
   check('? opens the styled shortcuts dialog with focus inside', await until(ada.page, () => document.querySelector('#shortcuts-help')?.open === true && document.activeElement?.closest('#shortcuts-help') != null))
   check('the rest of the page is inert while it is open', await ada.page.evaluate(() => document.querySelector('#issue-list')?.closest('[inert]') != null))
   await ada.page.keyboard.press('Escape')
   check('Esc closes it and the page is usable again', await until(ada.page, () => document.querySelector('#shortcuts-help')?.open === false && document.querySelector('[inert]') === null))
+  check('focus returns to what had it before the dialog opened', await until(ada.page, () => document.activeElement?.id === 'layout-list'))
 
   // The ⋯ menu (crease dropdown-menu, activateOnHover: false): hover is CSS,
   // so moving over its items sends nothing; choosing an item works.
