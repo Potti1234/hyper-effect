@@ -54,6 +54,15 @@ Client-owned inputs (bound with `OnInput`) handle IME composition and autofill (
 - an autofilled value submitted at once is part of the submit;
 - a value filled with only a `change` event (some password managers) is announced as an input by the page script.
 
+## Content Security Policy
+
+Every page response carries a policy with a fresh nonce (`Security.contentSecurityPolicy`); add the app's own sources with `contentSecurityPolicy.directives`.
+- `script-src` is `'self'`, the nonce and `'unsafe-eval'`. The inline page script, the speculation rules and the Datastar bundle (pinned with Subresource Integrity) carry the nonce.
+- `'unsafe-eval'` is there because Datastar compiles its `data-*` expressions with `Function`. hyper-effect builds those expressions only from handler tokens, element ids and sequence numbers (`binding.ts`), never from user content, and the serializer escapes every attribute value a view renders. The risk it leaves is markup injected by something else on the page (a browser extension, a third-party script the app adds): keep `script-src` closed to other origins.
+- Local effects (`data-hyper-local`) are JSON that the page script parses; they are not evaluated and need nothing from the policy.
+- `'unsafe-eval'` goes once Datastar has a CSP-safe expression mode; the policy is the one place to change.
+- `contentSecurityPolicy: { reportOnly: true }` sends the policy as `Content-Security-Policy-Report-Only`, for trying extra directives before enforcing them.
+
 ## Not verified yet
 
 - Safari and mobile browsers: WebKit is not installed on the test machine.
