@@ -34,6 +34,7 @@ import {
   UPLOAD,
   UPLOAD_PATH,
 } from './binding'
+import { DISMISS_EVENT, LOCAL, LOCAL_ATTRIBUTE } from './local'
 import * as Compression from './compression'
 import { heartbeat, patchElements, patchSignals, runOnce } from './datastar'
 import * as Metrics from './metrics'
@@ -159,6 +160,9 @@ const CONTROL_ID = 'hyper-control'
 /** Signal carrying browser effects of forwarded Commands. */
 const ACTIONS_SIGNAL = '_hc'
 const RUN_ACTIONS = 'hyperRunActions'
+/** Signal carrying the intake position of each render (local effects). */
+const APPLIED_SIGNAL = '_ha'
+const APPLIED = 'hyperApplied'
 const NAVIGATE = 'hyperNavigate'
 const VISITOR_COOKIE = 'hyper-visitor'
 const VISITOR_MAX_AGE = 60 * 60 * 24 * 365
@@ -258,9 +262,165 @@ const CLIENT_SCRIPT = `(() => {
     const moved = active && active !== document.body && active !== focusAtAction && !widget?.contains(active)
     if (!moved) target.focus()
   }
+  // Dialogs, as Foldkit UI's Dom.showDialog: the rest of the page is inert
+  // and scroll is locked while one is open, Escape on the topmost becomes a
+  // cancelable cancel event, Tab stays inside, and focus returns on close.
+  // Morphs remove the inert marks (the server's markup has none), so they
+  // are put back after every patch.
+  const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]'
+  const focusables = root => [...root.querySelectorAll(FOCUSABLE)].filter(el => el.getClientRects().length > 0)
+  const dialogs = new Map()
+  let dialogStack = []
+  const topDialog = () => dialogStack[dialogStack.length - 1]
+  const isolate = () => {
+    for (const el of document.querySelectorAll('[data-hyper-inert]')) { el.inert = false; el.removeAttribute('data-hyper-inert') }
+    dialogStack = dialogStack.filter(id => document.getElementById(id))
+    const top = dialogStack.length === 0 ? null : document.getElementById(topDialog())
+    document.documentElement.style.overflow = top ? 'hidden' : ''
+    for (let node = top; node && node !== document.body && node.parentElement; node = node.parentElement) {
+      for (const sibling of node.parentElement.children) {
+        if (sibling !== node && !sibling.inert && !/^(SCRIPT|STYLE|LINK)$/.test(sibling.tagName)) {
+          sibling.inert = true
+          sibling.setAttribute('data-hyper-inert', '')
+        }
+      }
+    }
+  }
+  const showDialog = (el, focusSelector) => {
+    if (!(el instanceof HTMLDialogElement) || !el.id) return false
+    el.style.position = 'fixed'
+    el.style.inset = '0'
+    if (!el.open) el.show()
+    if (dialogs.has(el.id)) { isolate(); return true }
+    const active = document.activeElement
+    const onKey = evt => {
+      const current = document.getElementById(el.id)
+      if (!current?.open || topDialog() !== el.id) return
+      if (evt.key === 'Escape') {
+        if (evt.defaultPrevented) return
+        evt.preventDefault()
+        current.dispatchEvent(new CustomEvent('cancel', { cancelable: true }))
+      } else if (evt.key === 'Tab') {
+        const inside = focusables(current)
+        if (inside.length === 0) { evt.preventDefault(); current.focus(); return }
+        if (evt.shiftKey && document.activeElement === inside[0]) { evt.preventDefault(); inside[inside.length - 1].focus() }
+        else if (!evt.shiftKey && document.activeElement === inside[inside.length - 1]) { evt.preventDefault(); inside[0].focus() }
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    dialogs.set(el.id, { onKey, returnFocus: active instanceof HTMLElement && active !== document.body ? active : null })
+    dialogStack = [...dialogStack.filter(id => id !== el.id), el.id]
+    isolate()
+    const requested = focusSelector ? el.querySelector(focusSelector) : null
+    ;(requested ?? focusables(el)[0] ?? el).focus()
+    return true
+  }
+  const releaseDialog = id => {
+    const held = dialogs.get(id)
+    if (!held) return false
+    document.removeEventListener('keydown', held.onKey)
+    dialogs.delete(id)
+    dialogStack = dialogStack.filter(other => other !== id)
+    isolate()
+    if (held.returnFocus?.isConnected) held.returnFocus.focus()
+    return true
+  }
+  const closeDialog = el => {
+    if (!(el instanceof HTMLDialogElement)) return false
+    if (el.open) el.close()
+    releaseDialog(el.id)
+    return true
+  }
+  // Local effects (local.ts): applied at once, then re-applied after every
+  // morph until the server's intake position passes the event's sequence
+  // number, so a render made before the event cannot undo them.
+  const pendingLocal = []
+  const setVisible = (target, isOpen) => {
+    target.hidden = !isOpen
+    target.setAttribute('data-state', isOpen ? 'open' : 'closed')
+    if (target.id) {
+      for (const trigger of document.querySelectorAll('[aria-controls="' + CSS.escape(target.id) + '"]')) {
+        trigger.setAttribute('aria-expanded', String(isOpen))
+      }
+    }
+  }
+  const applyLocal = op => {
+    const target = (op.id && document.getElementById(op.id)) || op.target
+    if (op.kind === 'visible' && target) setVisible(target, op.isOpen)
+    else if (op.kind === 'dialog' && target) op.isOpen ? showDialog(target, op.focus) : closeDialog(target)
+    else if (op.kind === 'select') {
+      const within = document.querySelector(op.within)
+      if (within) for (const item of within.querySelectorAll(op.items)) item.setAttribute(op.attribute, String(item.id === op.selected))
+    }
+  }
+  const elementOf = (selector, el) => selector === ':scope' ? el : document.querySelector(selector)
+  const runLocal = (effects, el, sequence) => {
+    const ops = []
+    let selectedId = ''
+    for (const effect of effects) {
+      const shown = effect.show ?? effect.hide ?? effect.toggle
+      if (shown !== undefined) {
+        const target = elementOf(shown, el)
+        if (target) ops.push({ kind: 'visible', target, id: target.id, isOpen: effect.show !== undefined || (effect.toggle !== undefined && target.hidden) })
+      } else if (effect.showDialog !== undefined || effect.closeDialog !== undefined) {
+        const target = elementOf(effect.showDialog ?? effect.closeDialog, el)
+        if (target) ops.push({ kind: 'dialog', target, id: target.id, isOpen: effect.showDialog !== undefined, focus: effect.focus })
+      } else if (effect.focus !== undefined) {
+        const target = elementOf(effect.focus, el)
+        requestAnimationFrame(() => target?.focus())
+      } else if (effect.select !== undefined) {
+        const { within, by, scroll } = effect.select
+        const attribute = effect.select.attribute ?? 'data-selected'
+        const items = effect.select.items ?? '[' + attribute + ']'
+        const list = [...(document.querySelector(within)?.querySelectorAll(items) ?? [])]
+        if (list.length === 0) continue
+        const index = list.findIndex(item => item.getAttribute(attribute) === 'true')
+        const next = list[index === -1 ? (by > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, index + by))]
+        selectedId = next.id
+        ops.push({ kind: 'select', within, items, attribute, selected: next.id })
+        if (scroll !== false) next.scrollIntoView({ block: 'nearest' })
+      }
+    }
+    for (const op of ops) applyLocal(op)
+    if (ops.length > 0) pendingLocal.push({ sequence, ops })
+    return selectedId
+  }
+  window.${LOCAL} = (el, evt, sequence) => {
+    let effects
+    try { effects = JSON.parse(el.getAttribute('${LOCAL_ATTRIBUTE}') ?? '{}')[evt.type] } catch { return }
+    if (Array.isArray(effects)) runLocal(effects, el, sequence)
+  }
+  window.${APPLIED} = json => {
+    if (!json) return
+    const { p } = JSON.parse(json)
+    if (typeof p === 'number') {
+      for (let index = pendingLocal.length - 1; index >= 0; index -= 1) {
+        if (pendingLocal[index].sequence < p) pendingLocal.splice(index, 1)
+      }
+    }
+    for (const entry of pendingLocal) for (const op of entry.ops) applyLocal(op)
+    isolate()
+  }
+  // Escape or a click outside a shown panel with dismiss effects dispatches
+  // the dismiss event on it; its binding hides it locally and tells the server.
+  const dismiss = outside => {
+    for (const panel of document.querySelectorAll('[${LOCAL_ATTRIBUTE}*="${DISMISS_EVENT}"]')) {
+      if (panel.hidden || panel.closest('[hidden]')) continue
+      if (outside && (panel.contains(outside) || (panel.id && outside.closest?.('[aria-controls="' + CSS.escape(panel.id) + '"]')))) continue
+      panel.dispatchEvent(new CustomEvent('${DISMISS_EVENT}'))
+    }
+  }
+  document.addEventListener('pointerdown', evt => dismiss(evt.target), true)
+  document.addEventListener('keydown', evt => { if (evt.key === 'Escape' && !evt.defaultPrevented) dismiss(null) })
+  // A forwarded Command with replies posts its outcome, unnumbered.
+  const reply = (endpoint, id, outcome) => {
+    if (!id || !endpoint) return
+    fetch(endpoint, { method: 'POST', credentials: 'same-origin', headers: { 'Datastar-Request': 'true', 'Content-Type': 'application/json' }, body: JSON.stringify({ r: id, o: outcome }) })
+      .catch(() => console.warn('hyper-effect: reply failed'))
+  }
   const sameOrigin = url => { try { return new URL(url, location.href).origin === location.origin } catch { return false } }
   let lastActions = ''
-  window.${RUN_ACTIONS} = json => {
+  window.${RUN_ACTIONS} = (json, endpoint) => {
     if (!json || json === lastActions) return
     lastActions = json
     for (const action of JSON.parse(json).actions) {
@@ -269,6 +429,9 @@ const CLIENT_SCRIPT = `(() => {
       if (action.replaceUrl && sameOrigin(action.replaceUrl)) history.replaceState(history.state, '', action.replaceUrl)
       if (action.load && sameOrigin(action.load)) location.assign(action.load)
       if (action.click) document.querySelector(action.click)?.click()
+      if (action.showDialog) reply(endpoint, action.reply, showDialog(document.querySelector(action.showDialog), action.focus) ? 'ok' : 'failed')
+      if (action.closeDialog) { closeDialog(document.querySelector(action.closeDialog)); reply(endpoint, action.reply, 'ok') }
+      if (action.releaseDialog) { releaseDialog(action.releaseDialog); reply(endpoint, action.reply, 'ok') }
     }
   }
   // Key bindings (keys.ts): the host element carries the table; matching
@@ -298,7 +461,7 @@ const CLIENT_SCRIPT = `(() => {
     }
     return keyTables.get(encoded)
   }
-  window.${KEYS} = (evt, el) => {
+  window.${KEYS} = (evt, el, sequence) => {
     const table = keyTable(el.getAttribute('data-hyper-keys') ?? '{"t":1000,"b":[]}')
     const state = sequences.get(el)
     const clear = () => { if (state) clearTimeout(state.timer); sequences.delete(el) }
@@ -314,7 +477,9 @@ const CLIENT_SCRIPT = `(() => {
     const emit = binding => {
       clear()
       if (binding.d) evt.preventDefault()
-      return binding.v ? { ...binding.x, v: document.activeElement?.id ?? '' } : binding.x
+      const targetId = document.activeElement?.id ?? ''
+      const selectedId = binding.l ? runLocal(binding.l, el, sequence) : ''
+      return binding.v ? { ...binding.x, x: [targetId, selectedId] } : binding.x
     }
     const fresh = () => {
       const single = table.b.find(binding => binding.p.length === 1 && allowed(binding) &&
@@ -843,7 +1008,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           ),
           '</head>',
           '<body>',
-          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-effect="window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')"></div>`,
+          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')"></div>`,
           rendered.html,
           '</body>',
           '</html>',
@@ -949,6 +1114,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           entry.connections += 1
           entry.everConnected = true
           let actionBatches = 0
+          let renders = 0
           if (entry.connections === 1) {
             yield* notifyConnection(entry, true)
           }
@@ -965,13 +1131,18 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
             // A burst of changes costs one render, never a backlog.
             Stream.buffer({ capacity: 1, strategy: 'sliding' }),
             Stream.mapEffect(() => entry.session.render),
-            Stream.map(({ html, frame, regions, title, signals, actions }) => {
-              // Forwarded Commands run in the browser after this morph.
+            Stream.map(({ html, frame, regions, title, signals, actions, position }) => {
+              // After this morph the page re-applies local effects the
+              // render does not reflect yet, then runs forwarded Commands.
+              const withApplied = {
+                ...signals,
+                [APPLIED_SIGNAL]: JSON.stringify({ n: (renders += 1), p: position ?? null }),
+              }
               const withActions =
                 actions.length === 0
-                  ? signals
+                  ? withApplied
                   : {
-                      ...signals,
+                      ...withApplied,
                       [ACTIONS_SIGNAL]: JSON.stringify({ n: (actionBatches += 1), actions }),
                     }
               const elements: Array<string> = []

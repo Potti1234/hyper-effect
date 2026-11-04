@@ -1,8 +1,9 @@
-import { Duration } from 'effect'
+import { Duration, Option } from 'effect'
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { type Binder, ENDPOINT_SIGNAL, KEYS, PENDING_INPUTS, SEQUENCE_SIGNAL } from './binding'
 import { binderOf } from './builder'
+import type { LocalEffect } from './local'
 
 /* Global key bindings: keyboard shortcuts for the whole page, matched in the
    browser.
@@ -29,6 +30,8 @@ export type KeySequence = string | Readonly<[string, string, ...Array<string>]>
 export type KeyContext = Readonly<{
   /** The id of the focused element, or '' when none has one. */
   targetId: string
+  /** The id of the item a `select` local effect moved to, or ''. */
+  selectedId: string
 }>
 
 export type KeyBinding<Message> = Readonly<{
@@ -45,6 +48,9 @@ export type KeyBinding<Message> = Readonly<{
   preventDefault?: boolean
   /** One-press bindings ignore held-down repeats unless 'Allow'. */
   whenRepeated?: 'Ignore' | 'Allow'
+  /** Screen-only effects the page applies at once, before posting
+   *  (`local.ts`), such as `{ select: { within: '#list', by: 1 } }` for `J`. */
+  local?: ReadonlyArray<LocalEffect>
 }>
 
 export type KeyBindingsOptions = Readonly<{
@@ -89,7 +95,12 @@ const payloadFor = <Message>(binder: Binder<Message>, message: KeyBinding<Messag
   if (typeof message !== 'function') return binder.bindMessage(message)
   /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
   const toMessage = message as (context: KeyContext) => Message
-  return `h: '${binder.registerHandler({ _tag: 'Value', f: targetId => toMessage({ targetId }) })}'`
+  const handlerId = binder.registerHandler({
+    _tag: 'Args',
+    f: ([targetId, selectedId]) =>
+      Option.some(toMessage({ targetId: String(targetId ?? ''), selectedId: String(selectedId ?? '') })),
+  })
+  return `h: '${handlerId}'`
 }
 
 /** Renders a page's key bindings. Put it in the view once (or once per
@@ -127,6 +138,7 @@ export const keyBindings = <Message>(
         r: binding.whenRepeated === 'Allow',
         x: binder === undefined ? '' : payloadFor(binder, binding.message),
         v: typeof binding.message === 'function',
+        ...(binding.local === undefined || binding.local.length === 0 ? {} : { l: binding.local }),
       }
     }),
   }
@@ -146,7 +158,7 @@ export const keyBindings = <Message>(
       h.Attribute('data-hyper-keys', JSON.stringify(table)),
       h.Attribute(
         'data-on:keydown__window',
-        `(evt.hyperKey = window.${KEYS}?.(evt, el)) && @post($${ENDPOINT_SIGNAL}, {payload: {...evt.hyperKey, q: ++$${SEQUENCE_SIGNAL}, p: window.${PENDING_INPUTS}?.() ?? {}}, requestCancellation: 'disabled'})`,
+        `(evt.hyperKey = window.${KEYS}?.(evt, el, $${SEQUENCE_SIGNAL} + 1)) && @post($${ENDPOINT_SIGNAL}, {payload: {...evt.hyperKey, q: ++$${SEQUENCE_SIGNAL}, p: window.${PENDING_INPUTS}?.() ?? {}}, requestCancellation: 'disabled'})`,
       ),
     ],
     [],

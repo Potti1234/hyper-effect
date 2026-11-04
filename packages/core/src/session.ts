@@ -18,7 +18,7 @@ import type * as Update from 'foldkit/update'
 
 import { type Binder, type Handler, INPUT_HANDLER_ATTRIBUTE, inputSignal } from './binding'
 import { assertNoDroppedHandlers, renderWith, withDiscardedRender } from './builder'
-import { type ClientAction, type ClientCommands, foldkitUiCommands } from './client-commands'
+import { type ClientAction, type ClientCommands, foldkitUiCommands, isWithReplies } from './client-commands'
 import { installFileReader } from './file-reader'
 import * as Intake from './intake'
 import { serializeHtml } from './foldkit-internal'
@@ -68,6 +68,8 @@ export const EventPayload = Schema.Union([
   Schema.Struct({ h: Schema.String, x: Schema.Array(Schema.Unknown), ...Envelope }),
   // A constant-Message handler needs no event data.
   Schema.Struct({ h: Schema.String, ...Envelope }),
+  // The outcome of a forwarded Command with replies (`client-commands.ts`).
+  Schema.Struct({ r: Schema.String, o: Schema.Literals(['ok', 'failed']), ...Envelope }),
 ])
 export type EventPayload = typeof EventPayload.Type
 
@@ -96,6 +98,9 @@ export type Rendered = Readonly<{
   signals: Readonly<Record<string, string>>
   /** Browser effects of forwarded Commands, to run after this morph. */
   actions: ReadonlyArray<ClientAction>
+  /** The intake position of the rendered Model (the next sequence number it
+   *  expects), so the page knows which of its local effects it reflects. */
+  position: number | undefined
 }>
 
 /** A Command as the runtime sees it: a named Effect that yields a Message. */
@@ -103,7 +108,13 @@ type RunnableCommand<Message, R> = Readonly<{
   name: string
   args?: Readonly<Record<string, unknown>>
   effect: Effect.Effect<Message, never, R>
+  /** Recorded by `Command.mapMessage`: lifts the Command's own result
+   *  Message into the program's (innermost first). */
+  messageMappers?: ReadonlyArray<(message: unknown) => unknown>
 }>
+
+/** Replies offered for forwarded Commands, kept for this many newer ones. */
+const MAX_REPLIES = 256
 
 export interface Session<Model, Message> {
   readonly id: string
@@ -322,12 +333,27 @@ export const make = <Model, Message, ClientMessage extends Message, Flags, R>(
     // Browser effects of forwarded Commands, sent with the next render.
     const clientCommands: ClientCommands = { ...foldkitUiCommands, ...program.clientCommands }
     let pendingActions: Array<ClientAction> = []
+    // Reply id → the lifted result Message per outcome.
+    const replies = new Map<string, Readonly<{ ok: Message; failed: Message | undefined }>>()
+    let replyCount = 0
 
     const runCommand = (command: RunnableCommand<Message, R>) => {
-      const forward = clientCommands[command.name]
-      const action = forward?.(command.args ?? {})
-      if (action !== undefined) {
-        pendingActions.push(action)
+      const forward = clientCommands[command.name]?.(command.args ?? {})
+      if (forward !== undefined) {
+        if (!isWithReplies(forward)) {
+          pendingActions.push(forward)
+          return Effect.void
+        }
+        const lift = (message: unknown) =>
+          /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+          (command.messageMappers ?? []).reduce((current, toParent) => toParent(current), message) as Message
+        const replyId = `r${String((replyCount += 1))}`
+        replies.set(replyId, {
+          ok: lift(forward.replies.ok),
+          failed: forward.replies.failed === undefined ? undefined : lift(forward.replies.failed),
+        })
+        if (replies.size > MAX_REPLIES) replies.delete(replies.keys().next().value as string)
+        pendingActions.push({ ...forward.action, reply: replyId })
         return Effect.void
       }
       return command.effect.pipe(
@@ -646,10 +672,15 @@ export const make = <Model, Message, ClientMessage extends Message, Flags, R>(
         },
       }
 
-      return SubscriptionRef.get(model).pipe(
-        // Taken together with the Model: which inputs the browser is ahead on.
-        Effect.map(current => ({ current, unapplied: new Map(unappliedInputs) })),
-        Effect.flatMap(({ current, unapplied }) =>
+      return Effect.sync(() => applied).pipe(
+        // Taken together with the Model: which inputs the browser is ahead
+        // on, and the intake position the Model reflects.
+        Effect.map(({ model: current, position }) => ({
+          current,
+          position,
+          unapplied: new Map(unappliedInputs),
+        })),
+        Effect.flatMap(({ current, position, unapplied }) =>
           Effect.suspend(() => {
             sink = frame
             return renderModel(program, current, binder, { regions: regionHost })
@@ -659,10 +690,10 @@ export const make = <Model, Message, ClientMessage extends Message, Flags, R>(
                 sink = undefined
               }),
             ),
-            Effect.map(rendered => ({ rendered, unapplied })),
+            Effect.map(rendered => ({ rendered, position, unapplied })),
           ),
         ),
-        Effect.map(({ rendered, unapplied }): Rendered => {
+        Effect.map(({ rendered, position, unapplied }): Rendered => {
           const now = Date.now()
           tables.set(prefix, { table: frame.table, replacedAt: undefined })
           if (frameTable !== undefined) replace(frameTable, now)
@@ -725,6 +756,7 @@ export const make = <Model, Message, ClientMessage extends Message, Flags, R>(
             regions: renderedRegions,
             signals,
             actions,
+            position,
           }
         }),
       )
@@ -736,6 +768,11 @@ export const make = <Model, Message, ClientMessage extends Message, Flags, R>(
       withDiscardedRender(() => resolveEventNow(payload))
 
     const resolveEventNow = (payload: Payload): Option.Option<Envelope> => {
+      if ('r' in payload) {
+        const reply = replies.get(payload.r)
+        const message = reply === undefined ? undefined : payload.o === 'ok' ? reply.ok : reply.failed
+        return message === undefined ? Option.none() : Option.some({ message })
+      }
       if ('m' in payload) {
         try {
           return Option.map(decodeClientMessage(decodeToken(payload.m)), message => ({ message }))

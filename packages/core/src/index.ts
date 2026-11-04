@@ -16,4 +16,5 @@ export { keyBindings, type KeyBinding, type KeyBindingsOptions, type KeyContext,
 export { region } from './region'
 export { shared } from './shared'
 export { memoizeLast, sampleLatest } from './streams'
-export { foldkitUiCommands, type ClientAction, type ClientCommands } from './client-commands'
+export { foldkitUiCommands, type ClientAction, type ClientCommands, type Forward, type Replies } from './client-commands'
+export { DISMISS_EVENT, local, type LocalEffect, type LocalEffects } from './local'

@@ -1,4 +1,6 @@
 import { Option } from 'effect'
+
+import { LOCAL, LOCAL_ATTRIBUTE, eventOfBinding } from './local'
 import type {
   Attribute,
   ChildAttribute,
@@ -387,8 +389,10 @@ export const rewriteAttributes = <Message>(
           },
         }
 
-  const rewritten = attributes.map(attribute =>
-    rewriteAttribute(attribute, elementBinder, h, inputId, rootBinder),
+  const rewritten = withLocalEffects(
+    attributes,
+    attributes.map(attribute => rewriteAttribute(attribute, elementBinder, h, inputId, rootBinder)),
+    h,
   )
   if (inputId === undefined || value === undefined) {
     return rewritten
@@ -403,6 +407,34 @@ export const rewriteAttributes = <Message>(
       : [h.Attribute(INPUT_HANDLER_ATTRIBUTE, valueHandlerId)]),
   ]
 }
+
+/** An element with local effects (`local.ts`): each binding of an event that
+ *  has effects runs them first, with the sequence number its post takes. */
+const withLocalEffects = <Message>(
+  original: ReadonlyArray<AnyAttribute<Message>>,
+  rewritten: ReadonlyArray<AnyAttribute<Message>>,
+  h: HtmlBuilder<Message>,
+): ReadonlyArray<AnyAttribute<Message>> => {
+  const declared = original.find(
+    attribute => tagOf(attribute) === 'Attribute' && keyOf(attribute) === LOCAL_ATTRIBUTE,
+  )
+  if (declared === undefined) return rewritten
+  /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+  const events = Object.keys(JSON.parse((declared as unknown as { value: string }).value) as object)
+  return rewritten.map(attribute => {
+    const key = tagOf(attribute) === 'Attribute' ? keyOf(attribute) : undefined
+    const event = key === undefined ? undefined : eventOfBinding(key)
+    if (key === undefined || event === undefined || !events.includes(event)) return attribute
+    /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+    const expression = (attribute as unknown as { value: string }).value
+    return h.Attribute(key, `(window.${LOCAL}?.(el, evt, $${SEQUENCE_SIGNAL} + 1), ${expression})`)
+  })
+}
+
+const keyOf = (attribute: unknown): string | undefined =>
+  typeof attribute === 'object' && attribute !== null && 'key' in attribute
+    ? String(attribute.key)
+    : undefined
 
 /** Lifecycle hooks that only exist in a browser runtime (focus management,
  *  measuring, third-party widgets). The server drops them; a widget that

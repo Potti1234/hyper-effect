@@ -12,9 +12,13 @@
    are internal; the real fix is upstream (Dom operations as an Effect
    service a server runtime can implement).
 
-   A forwarded Command's result Message is dropped. That is only correct for
-   acknowledgements (`CompletedFocusTab`); Commands whose result drives
-   further updates must not be forwarded. */
+   A forwarded Command's result Message is dropped unless the entry names
+   its replies (`{ action, replies }`): the Command's own result Messages for
+   each outcome. The session lifts them through the Command's recorded
+   Message mappers (`Command.mapMessage`), and the page posts which outcome
+   happened, so a Submodel whose update depends on the result (Foldkit UI's
+   dialog and its `SucceededShowDialog`) works on a server. The browser can
+   only pick among the outcomes the server offered. */
 
 export type ClientAction =
   | Readonly<{ focus: string }>
@@ -28,9 +32,26 @@ export type ClientAction =
    *  keyboard-chosen item (Enter in a combobox, listbox or menu) by clicking
    *  it, so the item's own click binding posts the selection. */
   | Readonly<{ click: string }>
+  /** Opens a `<dialog>` as Foldkit UI's `Dom.showDialog` does: modal
+   *  isolation of the rest of the page, focus trap, Escape as a cancelable
+   *  `cancel` CustomEvent, scroll lock, return focus on close. */
+  | Readonly<{ showDialog: string; focus?: string; reply?: string }>
+  | Readonly<{ closeDialog: string; reply?: string }>
+  /** Releases what `showDialog` installed for the dialog of this id, which
+   *  may have left the page. */
+  | Readonly<{ releaseDialog: string; reply?: string }>
+
+/** Outcomes of a forwarded Command, as its own (unlifted) result Messages. */
+export type Replies = Readonly<{ ok: unknown; failed?: unknown }>
+
+export type Forward = ClientAction | Readonly<{ action: ClientAction; replies: Replies }>
+
+export const isWithReplies = (
+  forward: Forward,
+): forward is Readonly<{ action: ClientAction; replies: Replies }> => 'replies' in forward
 
 export type ClientCommands = Readonly<
-  Record<string, (args: Readonly<Record<string, unknown>>) => ClientAction | undefined>
+  Record<string, (args: Readonly<Record<string, unknown>>) => Forward | undefined>
 >
 
 const cssEscape = (value: string): string => value.replace(/[^a-zA-Z0-9_-]/g, char => `\\${char}`)
@@ -67,4 +88,27 @@ export const foldkitUiCommands: ClientCommands = {
     const selector = item(args)
     return selector === undefined ? undefined : { click: selector }
   },
+  // Foldkit UI dialog (crease dialog, alert-dialog, sheet, drawer, command in
+  // a dialog): the page performs Dom.showDialog / closeDialog and replies.
+  ShowDialog: ({ id, focusSelector }) =>
+    typeof id === 'string'
+      ? {
+          action: {
+            showDialog: idSelector(id),
+            ...(typeof focusSelector === 'string' ? { focus: focusSelector } : {}),
+          },
+          replies: { ok: { _tag: 'SucceededShowDialog' }, failed: { _tag: 'FailedShowDialog' } },
+        }
+      : undefined,
+  CloseDialog: ({ id }) =>
+    typeof id === 'string'
+      ? { action: { closeDialog: idSelector(id) }, replies: { ok: { _tag: 'CompletedCloseDialog' } } }
+      : undefined,
+  ReleaseDialogResources: ({ id }) =>
+    typeof id === 'string'
+      ? {
+          action: { releaseDialog: id },
+          replies: { ok: { _tag: 'CompletedReleaseDialogResources' } },
+        }
+      : undefined,
 }

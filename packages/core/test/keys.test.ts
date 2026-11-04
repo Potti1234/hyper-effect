@@ -53,7 +53,7 @@ describe('key bindings', () => {
       )
       assert.isTrue(Exit.isSuccess(exit))
       const html = Exit.isSuccess(exit) ? exit.value.html : ''
-      assert.include(html, 'data-on:keydown__window="(evt.hyperKey = window.hyperKeys?.(evt, el))')
+      assert.include(html, 'data-on:keydown__window="(evt.hyperKey = window.hyperKeys?.(evt, el, $_hq + 1))')
       const table = tableOf(html)
       assert.strictEqual(table.t, 1000)
       // Disabled bindings are left out.
@@ -178,8 +178,9 @@ describe('key bindings with a function Message', () => {
       const binding = tableOf(html).b[0]
       assert.isTrue(binding.v)
       assert.match(binding.x, /^h: '/)
-      // The page script sends the focused element's id as `v`.
-      yield* session.receive({ h: fieldOf(binding.x), v: 'comment-input', q: 1 })
+      // The page script sends the focused element's id and the id a local
+      // `select` effect moved to (none here) as `x`.
+      yield* session.receive({ h: fieldOf(binding.x), x: ['comment-input', ''], q: 1 })
       assert.strictEqual(session.applied().model, 'comment-input')
       yield* session.close
     }),
