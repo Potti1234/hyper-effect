@@ -136,6 +136,8 @@ export const Message = defineMessageUnion({
   DroppedOnColumn: { status: Status },
   EndedDrag: {},
   PressedShortcut: { shortcut: Shortcut, targetId: S.String },
+  /** The page already moved the selection to this row (a local effect). */
+  MovedSelection: { elementId: S.String },
   GotWorkspace: { members: S.Array(Member), issues: S.Array(Issue) },
   SucceededCreate: { id: S.String, identifier: S.String },
   FailedCreate: { reason: S.String },
@@ -669,6 +671,10 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
       },
       EndedDrag: () => ({ model: { ...model, dragging: null, dropTarget: null } }),
       PressedShortcut: ({ shortcut, targetId }) => onShortcut(model, shortcut, targetId),
+      MovedSelection: ({ elementId }) => {
+        const issue = navigationOrder(model).find(candidate => `row-${candidate.identifier}` === elementId)
+        return { model: issue === undefined ? model : { ...model, selectedId: issue.id } }
+      },
       GotWorkspace: ({ members, issues }) => {
         const me = members.find(member => member.id === model.me.id) ?? model.me
         // A selection or picker on an issue someone deleted goes away.
@@ -910,7 +916,8 @@ const issueRow = (issue: Issue, assignee: Member | undefined, isSelected: boolea
       h.Class(
         cn(
           'group relative flex h-[38px] items-center gap-2 border-b border-border/60 pr-4 pl-3 text-[13px] transition-colors hover:bg-accent/60',
-          isSelected && 'bg-accent before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-primary',
+          // Styled from data-selected, which the page moves before the server answers.
+          'data-[selected=true]:bg-accent data-[selected=true]:before:absolute data-[selected=true]:before:inset-y-0 data-[selected=true]:before:left-0 data-[selected=true]:before:w-0.5 data-[selected=true]:before:bg-primary',
         ),
       ),
     ],
@@ -1405,14 +1412,20 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
         region(h, { id: 'toast', deps: [model.toast], render: () => toastView(model.toast, h) }),
         region(h, {
           id: 'shortcuts',
-          deps: [hasOverlay],
+          deps: [hasOverlay, model.query.layout],
           render: () =>
             h.div(
               [h.Id('shortcuts')],
               [
                 keyBindings(
                   h,
-                  shortcutBindings(hasOverlay, (shortcut, targetId) => Message.PressedShortcut({ shortcut, targetId })),
+                  shortcutBindings<Message>(
+                    hasOverlay,
+                    (shortcut, targetId) => Message.PressedShortcut({ shortcut, targetId }),
+                    model.query.layout === 'board'
+                      ? undefined
+                      : { within: '#issue-list', moved: elementId => Message.MovedSelection({ elementId }) },
+                  ),
                 ),
               ],
             ),

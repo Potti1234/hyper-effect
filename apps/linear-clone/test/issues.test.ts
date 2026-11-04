@@ -183,6 +183,20 @@ describe('issues: update (Story)', () => {
     assert.strictEqual(order[0]!.status, 'in_review')
   })
 
+  it('takes the row the page already moved the selection to', () => {
+    const start = model()
+    const order = Issues.navigationOrder(start)
+    Story.story(
+      Issues.updateModel,
+      Story.given(start),
+      // A local effect moved data-selected; no ScrollIntoView, the page scrolled.
+      Story.message(Issues.Message.MovedSelection({ elementId: `row-${order[2]!.identifier}` })),
+      Story.model(next => assert.strictEqual(next.selectedId, order[2]!.id)),
+      Story.message(Issues.Message.MovedSelection({ elementId: 'row-GONE-1' })),
+      Story.model(next => assert.strictEqual(next.selectedId, order[2]!.id)),
+    )
+  })
+
   it('runs palette commands', () => {
     Story.story(
       Issues.updateModel,
