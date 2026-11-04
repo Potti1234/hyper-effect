@@ -1,4 +1,4 @@
-import { Clock, Context, Data, Effect, Layer, Stream, SubscriptionRef } from 'effect'
+import { Clock, Context, Data, Effect, Layer, type Stream, SubscriptionRef } from 'effect'
 
 import {
   Categories,

@@ -4,8 +4,8 @@ import {
   Data,
   Effect,
   Layer,
-  Scope,
-  Stream,
+  type Scope,
+  type Stream,
   SubscriptionRef,
 } from 'effect'
 

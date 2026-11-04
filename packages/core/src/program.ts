@@ -87,6 +87,7 @@ export interface Program<
   readonly snapshotDeps?: (model: Model) => ReadonlyArray<unknown>
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- any program, whatever its types
 export type AnyProgram = Program<any, any, any, any, any>
 
 /** Matches `pathname` against a pattern such as `/incidents/:id`. */

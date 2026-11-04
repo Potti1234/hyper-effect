@@ -1,4 +1,4 @@
-import { Clock, Context, Data, Effect, Layer, Scope, Stream, SubscriptionRef } from 'effect'
+import { Clock, Context, Data, Effect, Layer, type Scope, Stream, SubscriptionRef } from 'effect'
 
 import {
   AVATAR_COLORS,

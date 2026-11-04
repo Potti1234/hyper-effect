@@ -1,5 +1,5 @@
 import { afterEach, assert, describe, it } from '@effect/vitest'
-import { Context, Effect, Layer } from 'effect'
+import { Context, Effect } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
 
 import type * as Hyper from '../src/server'

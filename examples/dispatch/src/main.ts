@@ -1,6 +1,6 @@
 import { NodeHttpServer, NodeRuntime, NodeServices } from '@effect/platform-node'
 import { PgClient } from '@effect/sql-pg'
-import { FileSystem, Layer, Path, Redacted } from 'effect'
+import { type FileSystem, Layer, type Path, Redacted } from 'effect'
 import { HttpRouter, HttpServerResponse, HttpStaticServer } from 'effect/http'
 import { KeyValueStore } from 'effect/persistence'
 import { createServer } from 'node:http'
