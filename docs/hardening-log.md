@@ -21,10 +21,11 @@ Everything run to verify the local effects, forwarded replies, navigation, prefe
 
 | What | Command | Result |
 |---|---|---|
-| Linear clone, development secrets | `apps/linear-clone: npm run check` | 50/50 |
+| Linear clone, development secrets | `apps/linear-clone: npm run check` | 52/52 |
 | Linear clone, `NODE_ENV=production` with real secrets | same, against `PORT=4101` | 50/50 |
 | Starter, `NODE_ENV=production` with real secrets | `apps/starter: npm run check` | 11/11 |
 | New checks in the Linear script | local `j`/`k` selection; styled shortcuts dialog (`?`): focus inside, background `inert`, Escape closes, focus returns; sidebar navigation in the same session; back button | pass |
+| End-to-end pass at 80 ms RTT (production mode, Chromium) | manual, testing agent | Found and fixed: Back from an issue page reused the cached list document and its session, so shortcuts were dropped (now `Cache-Control: no-store`, plus a reload on a back/forward-cache restore); Escape left focus on the body when the opening render had already moved focus into the dialog. Passed: local selection 0.7–1.5 ms, pickers target the new selection, styled dialog trap/inert/scroll lock, cross-tab updates while the dialog is open, sidebar navigation and history, Ctrl/middle-click, prefetch (issue opened in 47 ms), production secret guards. Holding J moves once (key repeat is ignored). |
 
 ## Latency (80 ms RTT)
 
