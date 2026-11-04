@@ -31,8 +31,9 @@ const page: Hyper.Options = {
 }
 
 const Routes = Layer.mergeAll(
-  Hyper.layer(Issues.program, { ...page, path: '/team/:team', paths: Issues.paths }),
-  Hyper.layer(IssuePage.program, { ...page, path: '/issue/:identifier' }),
+  // Resting on a link to another page prefetches it (no session until followed).
+  Hyper.layer(Issues.program, { ...page, path: '/team/:team', paths: Issues.paths, prefetch: ['/issue/*'] }),
+  Hyper.layer(IssuePage.program, { ...page, path: '/issue/:identifier', prefetch: ['/team/*', '/my-issues', '/issues'] }),
   HttpRouter.add('GET', '/', HttpServerResponse.redirect('/team/ENG', { status: 303 })),
   Auth.routes,
   HttpRouter.add('GET', '/styles.css', HttpServerResponse.file(publicFile('styles.css'), { contentType: 'text/css' })),
