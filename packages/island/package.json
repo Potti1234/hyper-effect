@@ -1,0 +1,34 @@
+{
+  "name": "@hyper-effect/island",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Foldkit islands in hyper-effect pages: the Schema contract, server rendering, the browser custom element and a Vite preset.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contract": "./src/contract.ts",
+    "./client": "./src/client.ts",
+    "./vite": "./src/vite.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hyper-effect/core": "*"
+  },
+  "peerDependencies": {
+    "effect": "4.0.0",
+    "foldkit": "0.165.0",
+    "vite": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "effect": "4.0.0",
+    "foldkit": "0.165.0",
+    "vite": "^8.3.5"
+  }
+}
