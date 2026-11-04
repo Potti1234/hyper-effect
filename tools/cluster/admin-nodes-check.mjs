@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { chromium } from 'playwright'
 
+import { secrets } from '../secrets.mjs'
 import { startBalancer } from './balancer.mjs'
 
 /* Phase B5: two catalog admin processes on one Postgres (products, images
@@ -55,7 +56,7 @@ const startNode = ({ name, port }) => {
   const log = openSync(join(root, 'output', `admin-node-${name}.log`), 'w')
   return spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
     cwd: app,
-    env: { ...process.env, PORT: String(port), HYPER_NODE: name, DATABASE_URL: databaseUrl, NODE_ENV: 'production' },
+    env: { ...process.env, ...secrets, PORT: String(port), HYPER_NODE: name, DATABASE_URL: databaseUrl, NODE_ENV: 'production' },
     stdio: ['ignore', log, log],
   })
 }

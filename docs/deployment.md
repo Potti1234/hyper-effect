@@ -5,7 +5,7 @@ What a deployment needs, from what phase B verified (2026-10-26). Each point nam
 ## One process
 
 - **Production mode:** `NODE_ENV=production`. It turns off markup validation and the development checks; development mode is 3–10× slower ([performance.md](performance.md#pitfalls)).
-- **Secrets:** set `snapshotSecret` (and the app's own cookie secrets). The examples read `HYPER_SNAPSHOT_SECRET` and fall back to development values that are in the source.
+- **Secrets:** set `snapshotSecret` (and the app's own cookie secrets). The examples read them with `secretFromEnvironment`, such as `HYPER_SNAPSHOT_SECRET`. In development a missing secret falls back to a value in the source; with `NODE_ENV=production` the server refuses to start without a secret of at least 32 characters. The tools that start production servers (`tools/perf`, `tools/cluster`) generate random ones per run (`tools/secrets.mjs`).
 - **Snapshots:** `Hyper.fileStore(directory)` on a local disk. Each file is replaced whole, so a process killed mid-write leaves the old snapshot, never part of one (`check:cluster`).
 - **Events are durable by default** (`durableEvents`): an event is answered once its snapshot is written. On a slow disk this costs answer latency; see [performance.md](performance.md#durable-events).
 

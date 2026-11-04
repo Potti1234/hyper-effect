@@ -27,7 +27,7 @@ const secured: Hyper.Options = {
   stylesheets: ['/styles.css'],
   ...(node === undefined ? {} : { node }),
   // Sealed snapshots: the session store sees neither Models nor visitors.
-  snapshotSecret: process.env['HYPER_SNAPSHOT_SECRET'] ?? 'hyper-dev-secret, set HYPER_SNAPSHOT_SECRET',
+  snapshotSecret: Hyper.secretFromEnvironment('HYPER_SNAPSHOT_SECRET', 'hyper-dev-secret, set HYPER_SNAPSHOT_SECRET'),
   durableEvents: Levers.durableEvents,
   compression: Levers.compression,
   // Load tests open hundreds of pages from one address.

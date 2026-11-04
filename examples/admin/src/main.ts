@@ -33,7 +33,7 @@ const experiments = process.env['HYPER_METRICS'] === '1'
 const page: Hyper.Options = {
   stylesheets: ['/styles.css'],
   principal: Auth.principal,
-  snapshotSecret: process.env['HYPER_SNAPSHOT_SECRET'] ?? 'hyper-dev-secret, set HYPER_SNAPSHOT_SECRET',
+  snapshotSecret: Hyper.secretFromEnvironment('HYPER_SNAPSHOT_SECRET', 'hyper-dev-secret, set HYPER_SNAPSHOT_SECRET'),
   limits: {
     maxUploadBytes: 3 * 1024 * 1024,
     maxUploadFiles: 2,

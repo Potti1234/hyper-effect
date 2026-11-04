@@ -33,7 +33,7 @@ Sign in with any name. Open a second window with another name to watch changes a
 | Variable | Default | Use |
 |---|---|---|
 | `PORT` | `4000` | Listen port |
-| `APP_SECRET` | dev value | Signs the sign-in cookie |
-| `HYPER_SNAPSHOT_SECRET` | dev value | Seals session snapshots in `.hyper-sessions/` |
+| `APP_SECRET` | dev value (required in production) | Signs the sign-in cookie |
+| `HYPER_SNAPSHOT_SECRET` | dev value (required in production) | Seals session snapshots in `.hyper-sessions/` |
 
 Set both secrets outside development.

@@ -10,6 +10,7 @@
 export { layer, metricsRoutes, nodeOfPath, type Limits, type Options, type RequestContext } from './server'
 export { PageNotFound, PageRedirect, type PageRequest, type Program } from './program'
 export type { ContentSecurityPolicy, Secret } from './security'
+export { secretFromEnvironment } from './security'
 export { fileStore } from './file-store'
 export { sqlStore, type SqlStoreOptions } from './sql-store'
 export { keyBindings, type KeyBinding, type KeyBindingsOptions, type KeyContext, type KeySequence } from './keys'

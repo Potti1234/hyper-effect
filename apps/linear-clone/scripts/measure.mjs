@@ -3,7 +3,7 @@ import { chromium } from 'playwright'
 /* Click-to-morph latency, for the person who clicks and for a second person
    watching the same list. Run against a production server:
 
-     NODE_ENV=production PORT=4100 node --import tsx src/main.ts
+     APP_SECRET=… HYPER_SNAPSHOT_SECRET=… NODE_ENV=production PORT=4100 node --import tsx src/main.ts
      node scripts/measure.mjs [rounds]
 
    Each round: Ada opens the status picker of one issue, then the clock starts

@@ -3,6 +3,8 @@ import { appendFileSync, mkdirSync, openSync, readdirSync, rmSync, writeFileSync
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { secrets } from '../secrets.mjs'
+
 /* Soak test (phase B6): the Dispatch board for a long time under steady load
    with churn, sampling memory and everything a session or the process keeps.
 
@@ -36,6 +38,7 @@ const server = spawn(process.execPath, ['--expose-gc', '--import', 'tsx', 'src/m
   cwd: app,
   env: {
     ...process.env,
+    ...secrets,
     PORT: String(PORT),
     NODE_ENV: 'production',
     HYPER_METRICS: '1',
