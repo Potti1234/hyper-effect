@@ -27,7 +27,6 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     env:
-      NODE_ENV: production
       APP_SECRET: ci-app-secret-0123456789abcdef0123456789
       HYPER_SNAPSHOT_SECRET: ci-snapshot-secret-0123456789abcdef01234
     steps:
@@ -41,13 +40,13 @@ jobs:
       - name: Linear clone
         working-directory: apps/linear-clone
         run: |
-          PORT=4100 npm start > ../../linear-clone.log 2>&1 &
+          NODE_ENV=production PORT=4100 npm start > ../../linear-clone.log 2>&1 &
           for attempt in $(seq 1 60); do curl -sf -o /dev/null http://localhost:4100/login && break; sleep 1; done
           npm run check
       - name: Starter
         working-directory: apps/starter
         run: |
-          PORT=4000 npm start > ../../starter.log 2>&1 &
+          NODE_ENV=production PORT=4000 npm start > ../../starter.log 2>&1 &
           for attempt in $(seq 1 60); do curl -sf -o /dev/null http://localhost:4000/login && break; sleep 1; done
           npm run check
       - if: failure()
