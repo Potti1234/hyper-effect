@@ -54,6 +54,12 @@ export type Options<R = never> = Readonly<{
    *  (links are taken on mousedown, back and forward work); each is also a
    *  page of its own. */
   paths?: ReadonlyArray<string>
+  /** URL patterns (speculation rules `href_matches`, such as `/issue/*`)
+   *  whose links the browser may prefetch when the pointer rests on them.
+   *  A prefetch (`Sec-Purpose: prefetch`) renders the page without starting
+   *  a session: none is left behind when the link is never followed, and the
+   *  page's stream starts it from the URL when it is. */
+  prefetch?: ReadonlyArray<string>
   /** Stylesheets linked from the page head. */
   stylesheets?: ReadonlyArray<string>
   /** Module scripts loaded by the page, such as an islands bundle. */
@@ -967,6 +973,17 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           Effect.provideContext(services),
         )
 
+      /** A prefetch: the page as `start` would render it, without
+       *  registering a session or running init's Commands. */
+      const preview = (id: string, request: PageRequest) =>
+        program.flags(request).pipe(
+          Effect.flatMap(flags =>
+            Session.make(program, id, { model: program.init(flags).model, firstSequence: 1 }),
+          ),
+          Effect.flatMap(session => session.render.pipe(Effect.orDie, Effect.ensuring(session.close))),
+          Effect.provideContext(services),
+        )
+
       const notifyConnection = (entry: Entry<Model, Message>, isConnected: boolean) =>
         program.onConnectionChange === undefined
           ? Effect.void
@@ -1069,6 +1086,13 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           `<style nonce="${nonce}">${CLIENT_STYLE}</style>`,
           `<script nonce="${nonce}">${CLIENT_SCRIPT}</script>`,
           `<script type="module" nonce="${nonce}" src="${escapeAttribute(datastarUrl)}"${integrity}></script>`,
+          ...(options.prefetch === undefined || options.prefetch.length === 0
+            ? []
+            : [
+                `<script type="speculationrules" nonce="${nonce}">${JSON.stringify({
+                  prefetch: [{ where: { href_matches: options.prefetch }, eagerness: 'moderate' }],
+                }).replace(/</g, '\\u003c')}</script>`,
+              ]),
           ...(options.scripts ?? []).map(
             src => `<script type="module" nonce="${nonce}" src="${escapeAttribute(src)}"></script>`,
           ),
@@ -1117,6 +1141,29 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
               status: 503,
               headers: { 'retry-after': '10' },
             })
+          }
+          const purpose = request.headers['sec-purpose'] ?? request.headers['purpose'] ?? ''
+          if (/prefetch/i.test(purpose)) {
+            const id = newSessionId()
+            const previewed = yield* preview(id, matched.value).pipe(
+              Effect.map(rendered => ({ _tag: 'Rendered', rendered }) as const),
+              Effect.catchTag('PageNotFound', () => Effect.succeed({ _tag: 'NotFound' } as const)),
+              Effect.catchTag('PageRedirect', ({ location, status }) =>
+                Effect.succeed({ _tag: 'Redirect', location, status } as const),
+              ),
+            )
+            if (previewed._tag === 'NotFound') return notFound
+            if (previewed._tag === 'Redirect') {
+              return withVisitor(
+                HttpServerResponse.redirect(previewed.location, { status: previewed.status ?? 303 }),
+              )
+            }
+            const nonce = Security.makeNonce()
+            return withVisitor(
+              HttpServerResponse.html(page(previewed.rendered, id, url, nonce)).pipe(
+                HttpServerResponse.setHeaders(securityHeaders(nonce)),
+              ),
+            )
           }
           const principal = yield* principalOf(request, visitorId)
           const started = yield* start(newSessionId(), matched.value, principal).pipe(
