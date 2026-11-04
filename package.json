@@ -17,6 +17,7 @@
     "lint": "eslint .",
     "build": "npm run build -w @hyper-effect/core -w @hyper-effect/island",
     "check:pack": "node tools/build/pack.mjs",
+    "check:crease": "node tools/crease/drift.mjs",
     "test": "vitest run",
     "start": "npm run start -w @hyper-effect/example-dispatch",
     "dev": "npm run dev -w @hyper-effect/example-dispatch",
