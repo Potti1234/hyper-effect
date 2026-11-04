@@ -1,0 +1,47 @@
+{
+  "name": "hyper-effect-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Elm architecture on the server, on Effect: Foldkit views rendered on the server, Datastar in the browser, Foldkit islands for client-side reactivity.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "examples/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "start": "npm run start -w @hyper-effect/example-dispatch",
+    "dev": "npm run dev -w @hyper-effect/example-dispatch",
+    "start:cluster": "npm run start:cluster -w @hyper-effect/example-dispatch",
+    "check:dispatch": "npm run check:dispatch -w @hyper-effect/example-dispatch",
+    "check:browser": "npm run check:browser -w @hyper-effect/example-dispatch",
+    "check:restart": "npm run check:restart -w @hyper-effect/example-dispatch",
+    "check:inputs": "npm run check:inputs -w @hyper-effect/example-dispatch",
+    "load-test": "npm run load-test -w @hyper-effect/example-dispatch --",
+    "perf:load": "bash tools/perf/load.sh",
+    "perf:profile": "bash tools/perf/profile.sh",
+    "start:admin": "npm run start -w @hyper-effect/example-admin",
+    "check:admin": "npm run check:admin -w @hyper-effect/example-admin",
+    "check:cluster": "npm run build -w @hyper-effect/example-dispatch && node tools/cluster/cluster-check.mjs",
+    "check:admin-nodes": "node tools/cluster/admin-nodes-check.mjs",
+    "create": "node packages/create-hyper-effect/bin.mjs",
+    "db:start": "bash tools/postgres/start.sh",
+    "check:compat": "node tools/compat/run.mjs ../crease output/compatibility.json && node tools/compat/report.mjs output/compatibility.json docs/compatibility.md"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0",
+    "@types/node": "^22.0.0",
+    "parse5": "^8.0.1",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0"
+  }
+}
