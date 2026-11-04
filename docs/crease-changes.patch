@@ -1,0 +1,79 @@
+--- a/src/lib/input.ts
++++ b/src/lib/input.ts
+@@ -33,6 +33,10 @@
+   isInvalid?: boolean
+   isAutofocus?: boolean
+   isRequired?: boolean
++  /** Extra attributes for the input element itself, after crease's own: an
++   *  event the props do not name (`h.OnBlur`, `h.OnKeyDown`), a data or ARIA
++   *  attribute. */
++  attributes?: ReadonlyArray<Attribute<Msg>>
+ }>
+ 
+ export type InputVisualAttributes<Msg> = Readonly<{
+@@ -105,6 +109,7 @@
+             ? []
+             : [h.AriaDescribedBy(describedBy)]),
+           ...visual.input,
++          ...(props.attributes ?? []),
+         ])
+ 
+         if (props.label === undefined && props.description === undefined)
+--- a/src/lib/textarea.ts
++++ b/src/lib/textarea.ts
+@@ -28,6 +28,10 @@
+   isReadOnly?: boolean
+   isInvalid?: boolean
+   isAutofocus?: boolean
++  /** Extra attributes for the textarea element itself, after crease's own:
++   *  an event the props do not name (`h.OnBlur`, `h.OnKeyDown`), a data or
++   *  ARIA attribute. */
++  attributes?: ReadonlyArray<TextareaAttribute<Msg>>
+ }>
+ 
+ export type TextareaVisualAttributes<Msg> = Readonly<{
+@@ -91,6 +95,7 @@
+             ? []
+             : [h.AriaDescribedBy(describedBy)]),
+           ...visual.textarea,
++          ...(props.attributes ?? []),
+         ])
+ 
+         if (props.label === undefined && props.description === undefined)
+--- a/src/ui/dropdown-menu.ts
++++ b/src/ui/dropdown-menu.ts
+@@ -168,6 +168,12 @@
+   /** When true, selecting a checkbox or radio item toggles it without
+    * closing the menu, so several entries can be edited in one open. */
+   keepOpenOnCheckableSelect?: boolean
++  /** Default true: moving the pointer over an item makes it the active
++   * item (a Message per item crossed). False: hover is styled in CSS and only
++   * keys move the active item; items with a submenu still open it on hover.
++   * For menus whose update runs away from the browser (a server), where
++   * every Message is a round trip. */
++  activateOnHover?: boolean
+ }>
+ 
+ const positionClass = (
+@@ -349,7 +355,8 @@
+                 anchorName: `--${props.model.id}-sub-${String(index)}`,
+               }),
+             ]),
+-        ...(config.isDisabled === true
++        ...(config.isDisabled === true ||
++        (props.activateOnHover === false && config.submenu === undefined)
+           ? []
+           : [
+               h.OnMouseEnter(
+@@ -390,6 +397,11 @@
+             config.variant === 'destructive'
+               ? 'text-destructive data-[active=true]:bg-destructive/10 data-[active=true]:text-destructive'
+               : undefined,
++            props.activateOnHover === false
++              ? config.variant === 'destructive'
++                ? 'hover:bg-destructive/10'
++                : 'hover:bg-accent hover:text-accent-foreground'
++              : undefined,
+           ),
+         ),
+       ],
