@@ -145,6 +145,7 @@ Three phases. Phase A can still change the API or the wire protocol, so it comes
 
 7. **API freeze:** naming review, built and versioned packages (today they are TypeScript sources), Datastar pinned.
    - **Decided 2026-10-27:** MIT licence; the repository goes to GitHub (later).
+   - **Publishing:** Changesets in alpha pre mode, a Release workflow that publishes `@hyper-effect/core`, `@hyper-effect/island` and `create-hyper-effect` from built `dist` with provenance, and a CI job that runs `npm create hyper-effect` from the packed tarballs outside the monorepo. See [releasing](releasing.md). The npm organization `hyper-effect` exists.
    - **Names, checked 2026-10-27:** on npm, `hyper-effect`, `create-hyper-effect` and the `@hyper-effect` scope are free. `hypereffect.com` is registered (since 2014, Namecheap, default name servers). Not registered: `hyper-effect.com`, `hypereffectjs.com`, `hypereffectts.com`, `hyper-effect-ts.com`, `usehypereffect.com`, `gethypereffect.com`, `hypereffecthq.com`, `hypereffectdev.com`, `hypereffectframework.com`.
 8. **Docs:** a guide (concepts, regions, security, uploads, deployment with session routing) and an API reference.
 9. **`create-hyper-effect`:** a template with one page, sign-in, a region and tests. **Done 2026-10-27:** `packages/create-hyper-effect`, generated as `apps/starter` (4 tests, browser check 11/11), see [the results](#phase-c-part-1-template-agent-skill-and-a-linear-clone-2026-10-27).

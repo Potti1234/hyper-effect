@@ -6,7 +6,7 @@ A page is a [Foldkit](https://github.com/foldkit/foldkit) program — Model, Mes
 
 No client state to sync, no API layer, no JSON contract between front and back: one program per page, live for every viewer.
 
-> **Status: experimental, pre-0.1.** The architecture is validated by three apps, 160+ tests and browser checks, but the API is not frozen, packages are unpublished TypeScript sources, and it builds on Foldkit's `experimental/server` and internals. See [where it stands](#project-status).
+> **Status: experimental, pre-0.1.** The architecture is validated by three apps, 160+ tests and browser checks, but the API is not frozen, the first npm release is an alpha, and it builds on Foldkit's `experimental/server` and internals. See [where it stands](#project-status).
 
 ## Quick start
 
@@ -83,7 +83,8 @@ Unit and property tests run with `npm test`. Browser checks drive Chromium (Play
 | `npm run perf:load -- 200 1 15` | load test: pages, changes per second, seconds (`perf:profile` adds a CPU profile) |
 | `cd apps/<app> && npm run check` | each app's own browser check (needs that app's `npm start`) |
 | `npm run lint` | ESLint (typescript-eslint) over packages, apps and examples |
-| `npm run check:pack` | builds the packages and imports every entry point from `dist` under plain Node |
+| `npm run check:pack` | builds the packages, stages them as published and imports every entry point from `dist` under plain Node |
+| `npm run check:create` | after `check:pack`: `npm create hyper-effect` from the packed tarballs in an empty directory, then install, typecheck and test the app |
 | `npm run check:crease` | compares the `src/ui` copies with creaseui at the commit in `tools/crease/upstream.json` |
 
 Check artefacts (screenshots, logs, profiles) go to `output/`, which is git-ignored.
@@ -110,7 +111,7 @@ Check artefacts (screenshots, logs, profiles) go to `output/`, which is git-igno
 
 **Foundations:** CI (typecheck, lint, tests, pack, creaseui drift, browser checks in production mode); `npm run build` emits `dist/` and `npm run check:pack` imports it under plain Node; production refuses development secrets (`secretFromEnvironment`); the creaseui copies are checked against a pinned creaseui commit.
 
-**Open before 0.1:** API freeze and a versioning/publishing decision (packages are 0.0.0); browser-run Submodels for richer components such as pickers (design-latency section 6); upstream asks to Foldkit ([public serializer](docs/upstream/foldkit-public-serializer.md), supported injected `HtmlBuilder`) and Datastar (a CSP-safe mode, so `'unsafe-eval'` can go); the remaining type assertions. Not yet tested: Safari and mobile browsers, Caddy, HTTP/3, Redis, server hardware.
+**Open before 0.1:** API freeze (releases are `0.1.0-alpha.*` on the `alpha` dist-tag, see [releasing](docs/releasing.md)); browser-run Submodels for richer components such as pickers (design-latency section 6); upstream asks to Foldkit ([public serializer](docs/upstream/foldkit-public-serializer.md), supported injected `HtmlBuilder`) and Datastar (a CSP-safe mode, so `'unsafe-eval'` can go); the remaining type assertions. Not yet tested: Safari and mobile browsers, Caddy, HTTP/3, Redis, server hardware.
 
 ## License
 

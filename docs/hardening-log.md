@@ -14,7 +14,9 @@ Everything run to verify the local effects, forwarded replies, navigation, prefe
 | Prefetch: speculation rules, no session held, events refused until the stream opens, session from the URL | `packages/core/test/prefetch.test.ts` | pass |
 | Secret guard: development fallback, production refuses missing/short secrets | `packages/core/test/secrets.test.ts` | 2 pass |
 | Linear clone Stories: local selection, unknown row ids ignored, one Program across lists | `apps/linear-clone/test` | 26 pass |
-| Packages build and import under plain `node` | `npm run build`, `npm run check:pack` | core and island: 4 entry points each import from `dist`, both pack |
+| Packages build and import under plain `node` | `npm run build`, `npm run check:pack` | core and island: 4 entry points each import from `dist`; all three packages staged without `private`, workspace dependencies pinned, and packed |
+| `npm create hyper-effect` outside the monorepo | `npm run check:create` (CI job `create`) | packed create-hyper-effect + packed core in an empty temp directory: install, typecheck, 4 tests, CSS build pass; agent skill copied |
+| Release, dry run | `changeset version` then `check:pack` and `tools/build/publish.mjs --dry-run` on a copy | all three at `0.1.0-alpha.0` on the `alpha` dist-tag, public; core 49 files, island 13, create-hyper-effect 28 |
 | creaseui copies against creaseui `cb5c9172` | `npm run check:crease` | 40 copies, 35 identical, 5 recorded differences |
 | Against the latest Foldkit, Foldkit UI and Effect | `.github/workflows/upstream.yml` (weekly, `node tools/upstream/use-latest-foldkit.mjs`) | typecheck, tests, pack; on Foldkit 0.170.0 / Effect 4.1.2 all pass |
 
