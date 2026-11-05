@@ -19,6 +19,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -30,16 +31,23 @@ jobs:
       # Trusted publishing (OIDC) needs npm 11.5.1 or newer.
       - run: npm install -g npm@11
       - run: npm ci
-      - uses: changesets/action@v2
+      - id: changesets
+        uses: changesets/action@v2
         with:
-          version: npm run version-packages
-          publish: npm run release
-          title: Version Packages
-          commit: Version Packages
-          createGithubReleases: true
+          version-script: npm run version-packages
+          publish-script: npm run release
+          pr-title: Version Packages
+          commit-message: Version Packages
+          create-github-releases: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Only for the first publish, before trusted publishing is set up
           # on npmjs.com; remove the secret afterwards.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
+      # A push made with GITHUB_TOKEN starts no workflows, so CI is started
+      # on the Version Packages branch by hand.
+      - if: steps.changesets.outputs.has-changesets == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref changeset-release/main
