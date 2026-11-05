@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -7,12 +7,18 @@ import { fileURLToPath } from 'node:url'
 
    usage: create-hyper-effect <name> [--title "My App"] [--dir <path>] [--core <version>]
 
-   Until @hyper-effect/core is published, apps live in the hyper-effect
-   monorepo: run from inside it and the app goes to apps/<name>, a workspace
-   that uses the monorepo's packages. --core sets the dependency for an app
-   elsewhere once a version is published. */
+   Run with `npm create hyper-effect@latest <name>`: the app depends on the
+   @hyper-effect/core version this package was published with, and gets the
+   hyper-effect agent skill in .claude/skills. Run from inside the
+   hyper-effect monorepo, the app goes to apps/<name>, a workspace that uses
+   the monorepo's packages. --core overrides the dependency (a version, or
+   file:<tarball> for a packed build). */
 
-const TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), 'template')
+const HERE = dirname(fileURLToPath(import.meta.url))
+const TEMPLATE = join(HERE, 'template')
+/** The agent skill, staged into the published package by tools/build/pack.mjs. */
+const SKILL = join(HERE, 'skill')
+const { version } = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8'))
 /** Files renamed on the way: npm would treat them specially in the package. */
 const RENAMES = { '_package.json': 'package.json', _gitignore: '.gitignore' }
 const TEXT = /\.(ts|mjs|js|json|md|css|html|txt)$|^_?gitignore$/
@@ -49,8 +55,8 @@ const findMonorepo = from => {
 }
 
 const monorepo = findMonorepo(process.cwd())
-if (monorepo === undefined && core === undefined) {
-  fail('@hyper-effect/core is not published yet: run this inside the hyper-effect monorepo (the app goes to apps/<name>), or pass --core <version>.')
+if (monorepo === undefined && core === undefined && version === '0.0.0') {
+  fail('this is an unpublished build: run it inside the hyper-effect monorepo (the app goes to apps/<name>), or pass --core <version>.')
 }
 const target = resolve(dir ?? (monorepo === undefined ? name : join(monorepo, 'apps', name)))
 if (existsSync(target) && readdirSync(target).length > 0) fail(`${target} exists and is not empty`)
@@ -59,7 +65,7 @@ const values = {
   name,
   title: title ?? name.split('-').map(word => word[0].toUpperCase() + word.slice(1)).join(' '),
   // Inside the monorepo, npm workspaces link the local package.
-  coreVersion: core ?? '*',
+  coreVersion: core ?? (monorepo === undefined ? version : '*'),
 }
 const fill = text => text.replace(/\{\{(name|title|coreVersion)\}\}/g, (_, key) => values[key])
 
@@ -74,6 +80,9 @@ const copy = (from, to) => {
   }
 }
 copy(TEMPLATE, target)
+if (monorepo === undefined && existsSync(SKILL)) {
+  cpSync(SKILL, join(target, '.claude', 'skills', 'hyper-effect'), { recursive: true })
+}
 
 const shown = relative(process.cwd(), target) || '.'
 console.log(`Created ${values.title} in ${shown}.
