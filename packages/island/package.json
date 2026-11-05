@@ -18,8 +18,8 @@
     "@hyper-effect/core": "*"
   },
   "peerDependencies": {
-    "effect": "4.0.0",
-    "foldkit": "0.165.0",
+    "effect": "4.1.2",
+    "foldkit": "0.170.0",
     "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {
@@ -28,8 +28,8 @@
     }
   },
   "devDependencies": {
-    "effect": "4.0.0",
-    "foldkit": "0.165.0",
+    "effect": "4.1.2",
+    "foldkit": "0.170.0",
     "vite": "^8.3.5"
   }
 }

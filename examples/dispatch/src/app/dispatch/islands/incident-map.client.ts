@@ -139,7 +139,7 @@ export const update = (model: Model, message: Message): UpdateReturn =>
 // SUBSCRIPTION
 
 export const subscriptions = Subscription.make<Model, Message>()(_entry => ({
-  props: Port.subscription(ports.inbound.props, props => Message.ReceivedProps({ props })),
+  props: Port.subscriptionEntry(ports.inbound.props, props => Message.ReceivedProps({ props })),
 }))
 
 // VIEW
