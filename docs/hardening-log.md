@@ -15,13 +15,13 @@ Everything run to verify the local effects, forwarded replies, navigation, prefe
 | Secret guard: development fallback, production refuses missing/short secrets | `packages/core/test/secrets.test.ts` | 2 pass |
 | Linear clone Stories: local selection, unknown row ids ignored, one Program across lists | `apps/linear-clone/test` | 26 pass |
 | Packages build and import under plain `node` | `npm run build`, `npm run check:pack` | core and island: 4 entry points each import from `dist`, both pack |
-| creaseui copies against creaseui `39bde3c8` | `npm run check:crease` | 40 copies, 30 identical, 10 recorded differences |
+| creaseui copies against creaseui `cb5c9172` | `npm run check:crease` | 40 copies, 35 identical, 5 recorded differences |
 
 ## Browser (Chromium, Playwright)
 
 | What | Command | Result |
 |---|---|---|
-| Linear clone, development secrets | `apps/linear-clone: npm run check` | 52/52 |
+| Linear clone, development secrets | `apps/linear-clone: npm run check` | 53/53 |
 | Linear clone, `NODE_ENV=production` with real secrets | same, against `PORT=4101` | 50/50 |
 | Starter, `NODE_ENV=production` with real secrets | `apps/starter: npm run check` | 11/11 |
 | New checks in the Linear script | local `j`/`k` selection; styled shortcuts dialog (`?`): focus inside, background `inert`, Escape closes, focus returns; sidebar navigation in the same session; back button | pass |
