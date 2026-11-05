@@ -8,7 +8,7 @@ Everything run to verify the local effects, forwarded replies, navigation, prefe
 |---|---|---|
 | Type check, all workspaces | `npm run typecheck` | passes |
 | Lint (errors fail, type assertions warn) | `npm run lint` | 0 errors, 57 assertion warnings |
-| Unit, property and Story tests | `npm test` (Vitest) | 179 passed, 3 skipped (Postgres) |
+| Unit, property and Story tests | `npm test` (Vitest) | 181 passed, 3 skipped (Postgres) |
 | Local effects, reply forwarding | `packages/core/test/local.test.ts`, forwarding tests | pass |
 | Navigation: several paths, `onUrlChange`, fallback loads, redirects, external and protocol-relative URLs rejected, no `onUrlChange` | `packages/core/test/navigation.test.ts` | 6 pass (with prefetch) |
 | Prefetch: speculation rules, no session held, events refused until the stream opens, session from the URL | `packages/core/test/prefetch.test.ts` | pass |
@@ -16,14 +16,16 @@ Everything run to verify the local effects, forwarded replies, navigation, prefe
 | Linear clone Stories: local selection, unknown row ids ignored, one Program across lists | `apps/linear-clone/test` | 26 pass |
 | Packages build and import under plain `node` | `npm run build`, `npm run check:pack` | core and island: 4 entry points each import from `dist`, both pack |
 | creaseui copies against creaseui `cb5c9172` | `npm run check:crease` | 40 copies, 35 identical, 5 recorded differences |
+| Against the latest Foldkit, Foldkit UI and Effect | `.github/workflows/upstream.yml` (weekly, `node tools/upstream/use-latest-foldkit.mjs`) | typecheck, tests, pack; on Foldkit 0.170.0 / Effect 4.1.2 all pass |
 
 ## Browser (Chromium, Playwright)
 
 | What | Command | Result |
 |---|---|---|
 | Linear clone, development secrets | `apps/linear-clone: npm run check` | 53/53 |
-| Linear clone, `NODE_ENV=production` with real secrets | same, against `PORT=4101` | 50/50 |
+| Linear clone, `NODE_ENV=production` with real secrets (Foldkit 0.170, Effect 4.1.2) | same | 53/53 |
 | Starter, `NODE_ENV=production` with real secrets | `apps/starter: npm run check` | 11/11 |
+| Dispatch, development (Foldkit 0.170, Effect 4.1.2) | `npm run check:dispatch`, `npm run check:browser` | 24/24, inputs pass |
 | New checks in the Linear script | local `j`/`k` selection; styled shortcuts dialog (`?`): focus inside, background `inert`, Escape closes, focus returns; sidebar navigation in the same session; back button | pass |
 | End-to-end pass at 80 ms RTT (production mode, Chromium) | manual, testing agent | Found and fixed: Back from an issue page reused the cached list document and its session, so shortcuts were dropped (now `Cache-Control: no-store`, plus a reload on a back/forward-cache restore); Escape left focus on the body when the opening render had already moved focus into the dialog. Passed: local selection 0.7–1.5 ms, pickers target the new selection, styled dialog trap/inert/scroll lock, cross-tab updates while the dialog is open, sidebar navigation and history, Ctrl/middle-click, prefetch (issue opened in 47 ms), production secret guards. Holding J moves once (key repeat is ignored). |
 
