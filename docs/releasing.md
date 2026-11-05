@@ -17,7 +17,7 @@ Everything else in the repository (apps, examples, the root) is private and neve
 3. **Merging the Version Packages PR publishes.** The workflow runs `npm run release`:
    - `tools/build/pack.mjs` compiles core and island, stages each package as it is published (exports on `dist/*.js` and `dist/*.d.ts`, no `private`, workspace dependencies pinned to the exact version, the agent skill inside `create-hyper-effect`) and checks every entry point imports under plain node;
    - `tools/build/publish.mjs` publishes the staged directories in dependency order with provenance, skips versions already on npm, and puts prereleases on the `alpha` dist-tag;
-   - changesets then tags the commit and creates the GitHub releases.
+   - changesets/action then pushes the tags (from the `CHANGESETS_OUTPUT` events `publish.mjs` writes) and creates the GitHub releases.
 
 In the workspace, `package.json` exports keep pointing at `src/*.ts` and the packages stay `"private": true`. That keeps tsx, Vite and Vitest on the source, and makes a stray `npm publish` from a package directory fail.
 

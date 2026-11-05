@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url'
    order, skipping any version already on npm (so a rerun after a partial
    failure finishes the release). A prerelease such as 0.1.0-alpha.0 goes to
    the `alpha` dist-tag, so `npm install` keeps resolving the latest stable
-   version. Prints changesets' "New tag:" line per package, from which
-   changesets/action creates the GitHub releases.
+   version. For each package published it appends a changesets `git-tag`
+   event to the NDJSON file named by CHANGESETS_OUTPUT, from which
+   changesets/action pushes the tags and creates the GitHub releases.
 
    In CI, authentication is npm trusted publishing (OIDC) or, until that is
    set up, NODE_AUTH_TOKEN. Provenance is on when NPM_CONFIG_PROVENANCE=true. */
@@ -41,4 +42,10 @@ for (const dir of dirs) {
     stdio: 'inherit',
   })
   console.log(`New tag: ${name}@${version}`)
+  if (process.env.CHANGESETS_OUTPUT !== undefined && !isDryRun) {
+    appendFileSync(
+      process.env.CHANGESETS_OUTPUT,
+      `${JSON.stringify({ type: 'git-tag', tag: `${name}@${version}`, packageName: name })}\n`,
+    )
+  }
 }
