@@ -14,8 +14,9 @@ type Slot = Readonly<{
 
 export type CardProps = Slot &
   Readonly<{
-    id?: string
     element?: 'div' | 'section' | 'article'
+    /** Id on the card element, for in-page links and `aria-labelledby`. */
+    id?: string
     size?: 'default' | 'sm'
   }>
 
@@ -30,8 +31,8 @@ const slotDiv =
 
 export const card = <Msg>(props: CardProps, h: HtmlBuilder<Msg>): Html => {
   const attributes = [
-    ...(props.id === undefined ? [] : [h.Id(props.id)]),
     h.DataAttribute('slot', 'card'),
+    ...(props.id === undefined ? [] : [h.Id(props.id)]),
     h.DataAttribute('size', props.size ?? 'default'),
     h.Class(
       cn(

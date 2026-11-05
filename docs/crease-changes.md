@@ -2,6 +2,8 @@
 
 Changes to crease/ui that came out of building a Linear clone on hyper-effect (`apps/linear-clone`, `EXPERIMENT.md` there). They are written against crease **`696a5bcd`** (`fix(docs): show component groups on guide pages`), and applied in hyper-effect's copies of the components, where they are tested.
 
+> **Status:** all of this is now in creaseui. C1 and C2 landed in [creaseui#51](https://github.com/Potti1234/creaseui/pull/51), C3 as `itemToBehavior` (`47509f5d`). The copies in hyper-effect are reinstalled from creaseui `cb5c9172` and checked by `npm run check:crease`, so this page and the patch are kept as history.
+
 - **Applied, with a patch:**
   - C1: an `attributes` prop on `input` and `textarea`;
   - C2: `activateOnHover` on `dropdownMenu`.

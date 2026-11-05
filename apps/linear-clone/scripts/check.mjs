@@ -325,6 +325,10 @@ try {
   await ada.page.waitForTimeout(200)
   ada.page.off('request', countPost)
   check('hovering the menu items sends no requests', hoverPosts === 0, `${hoverPosts} posts`)
+  await ada.page.keyboard.press('Escape')
+  check('Esc closes the menu and focus returns to its trigger', await until(ada.page, () => document.querySelector('[role="menu"]') === null && document.activeElement?.getAttribute('aria-label') === 'Issue actions'))
+  await ada.page.getByRole('button', { name: 'Issue actions' }).click()
+  await ada.page.getByRole('menuitem', { name: 'Back to list' }).waitFor({ timeout: TIMEOUT })
   await ada.page.getByRole('menuitem', { name: 'Back to list' }).click()
   check('a menu item chosen with the pointer works', await ada.page.waitForURL('**/team/ENG', { timeout: TIMEOUT }).then(() => true, () => false))
 

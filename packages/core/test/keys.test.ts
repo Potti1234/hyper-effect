@@ -104,6 +104,7 @@ describe('forwarded Foldkit UI Commands', () => {
     assert.deepStrictEqual(foldkitUiCommands['FocusInput']?.({ id: 'palette' }), { focus: '#palette-input' })
     assert.deepStrictEqual(foldkitUiCommands['FocusButton']?.({ id: 'menu' }), { focus: '#menu-button' })
     assert.deepStrictEqual(foldkitUiCommands['FocusItems']?.({ id: 'menu' }), { focus: '#menu-items' })
+    assert.deepStrictEqual(foldkitUiCommands['FocusDropdownMenuTrigger']?.({ id: 'menu' }), { focus: '#menu-trigger' })
     // Other arguments: not forwarded, the Command runs as usual.
     assert.isUndefined(foldkitUiCommands['ClickItem']?.({ selector: '#x' }))
   })
