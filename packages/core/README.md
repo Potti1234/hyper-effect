@@ -3,10 +3,10 @@
 Foldkit programs whose loop runs on the server, on Effect, rendered with Foldkit views and driven by Datastar in the browser.
 
 ```sh
-npm install @hyper-effect/core@alpha effect foldkit
+npm install @hyper-effect/core effect foldkit
 ```
 
-Before 0.1 the packages are published on the `alpha` dist-tag. To start a new app: `npm create hyper-effect@alpha my-app`.
+To start a new app: `npm create hyper-effect my-app`.
 
 ```ts
 import * as Hyper from '@hyper-effect/core'

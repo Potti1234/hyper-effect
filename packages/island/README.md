@@ -3,10 +3,10 @@
 Foldkit programs that run in the browser inside a server-rendered hyper-effect page, for everything that needs client-side reactivity: maps, canvases, drag and drop, file inputs.
 
 ```sh
-npm install @hyper-effect/island@alpha
+npm install @hyper-effect/island
 ```
 
-Before 0.1 the packages are published on the `alpha` dist-tag. To start a new app: `npm create hyper-effect@alpha my-app`.
+To start a new app: `npm create hyper-effect my-app`.
 
 | Entry | Runs in | Contents |
 |---|---|---|
