@@ -7,6 +7,8 @@ name: Release
 on:
   push:
     branches: [main]
+  # Re-run a publish that failed (it skips versions already on npm).
+  workflow_dispatch:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
