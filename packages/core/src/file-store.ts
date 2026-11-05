@@ -26,6 +26,7 @@ export const fileStore = (directory: string) =>
         has: files.has,
         clear: files.clear,
         size: files.size,
+        keys: files.keys,
         set: (key, value) => {
           // The file name `layerFileSystem` uses for the key.
           const file = path.join(directory, encodeURIComponent(key))

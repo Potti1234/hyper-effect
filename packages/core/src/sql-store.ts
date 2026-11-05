@@ -76,6 +76,10 @@ export const sqlStore = (options: SqlStoreOptions = {}) =>
           Effect.map(rows => Number(rows[0]?.count ?? 0)),
           Effect.mapError(failed('size')),
         ),
+        keys: Effect.suspend(() => sql<{ id: string }>`SELECT id FROM ${table} WHERE expires_at > ${Date.now()}`).pipe(
+          Effect.map(rows => rows.map(row => row.id)),
+          Effect.mapError(failed('keys')),
+        ),
       })
     }),
   )

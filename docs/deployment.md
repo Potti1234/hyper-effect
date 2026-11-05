@@ -58,6 +58,7 @@ Client-owned inputs (bound with `OnInput`) handle IME composition and autofill (
 
 Every page response carries a policy with a fresh nonce (`Security.contentSecurityPolicy`); add the app's own sources with `contentSecurityPolicy.directives`.
 - `script-src` is `'self'`, the nonce and `'unsafe-eval'`. The inline page script, the speculation rules and the Datastar bundle (pinned with Subresource Integrity) carry the nonce.
+- Datastar is served by the app itself at `/_hyper/datastar-<version>.js` (gzip when accepted, cached as immutable), from the copy shipped in `@hyper-effect/core` (`tools/datastar/vendor.mjs` updates it). No page loads a third-party script, so a CDN outage or compromise cannot reach the page. `datastarUrl` points elsewhere if you want; give `datastarIntegrity` with it.
 - `'unsafe-eval'` is there because Datastar compiles its `data-*` expressions with `Function`. hyper-effect builds those expressions only from handler tokens, element ids and sequence numbers (`binding.ts`), never from user content, and the serializer escapes every attribute value a view renders. The risk it leaves is markup injected by something else on the page (a browser extension, a third-party script the app adds): keep `script-src` closed to other origins.
 - Local effects (`data-hyper-local`) are JSON that the page script parses; they are not evaluated and need nothing from the policy.
 - `'unsafe-eval'` goes once Datastar has a CSP-safe expression mode; the policy is the one place to change.

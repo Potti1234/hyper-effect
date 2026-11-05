@@ -19,16 +19,16 @@
     "load-test": "node scripts/load-test.mjs"
   },
   "dependencies": {
-    "@effect/platform-browser": "4.0.0",
-    "@effect/platform-node": "4.0.0",
-    "@effect/sql-pg": "4.0.0",
-    "@foldkit/ui": "0.165.0",
+    "@effect/platform-browser": "4.1.2",
+    "@effect/platform-node": "4.1.2",
+    "@effect/sql-pg": "4.1.2",
+    "@foldkit/ui": "0.170.0",
     "@hyper-effect/core": "*",
     "@hyper-effect/island": "*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "effect": "4.0.0",
-    "foldkit": "0.165.0",
+    "effect": "4.1.2",
+    "foldkit": "0.170.0",
     "maplibre-gl": "^6.15.0",
     "tailwind-merge": "^3.7.0"
   },

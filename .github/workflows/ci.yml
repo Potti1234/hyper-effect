@@ -24,6 +24,20 @@ jobs:
       - run: npm run check:pack
       - run: npm run check:crease
 
+  create:
+    # npm create hyper-effect, from the packed tarballs, in an empty directory
+    # outside the monorepo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:pack
+      - run: npm run check:create
+
   browser:
     runs-on: ubuntu-latest
     env:

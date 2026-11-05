@@ -3,9 +3,30 @@
   "version": "0.0.0",
   "private": true,
   "description": "Creates a hyper-effect app: one page with sign-in, live shared state, a form, regions, tests and a browser check.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Potti1234/hyper-effect.git",
+    "directory": "packages/create-hyper-effect"
+  },
+  "homepage": "https://github.com/Potti1234/hyper-effect/tree/main/packages/create-hyper-effect#readme",
+  "bugs": "https://github.com/Potti1234/hyper-effect/issues",
+  "keywords": [
+    "foldkit",
+    "effect",
+    "datastar",
+    "create",
+    "template"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
   "type": "module",
   "bin": {
-    "create-hyper-effect": "./bin.mjs"
+    "create-hyper-effect": "bin.mjs"
   },
-  "files": ["bin.mjs", "template"]
+  "files": [
+    "bin.mjs",
+    "template"
+  ]
 }

@@ -23,6 +23,7 @@ const slowStore = (delayMillis: number) => {
     remove: inner.remove,
     clear: inner.clear,
     size: inner.size,
+    keys: inner.keys,
     set: (key, value) =>
       Effect.sync(() => {
         counter.writes += 1

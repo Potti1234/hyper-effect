@@ -1,0 +1,28 @@
+name: Latest Foldkit
+
+# hyper-effect depends on Foldkit internals (the serializer, the injected
+# HtmlBuilder), so each Foldkit release can break it. This runs the checks
+# against the newest Foldkit, Foldkit UI and the Effect release Foldkit
+# accepts, without changing what main pins.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/upstream/use-latest-foldkit.mjs
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run check:pack

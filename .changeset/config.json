@@ -1,0 +1,18 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": ["@changesets/changelog-github", { "repo": "Potti1234/hyper-effect" }],
+  "commit": false,
+  "fixed": [["@hyper-effect/core", "@hyper-effect/island", "create-hyper-effect"]],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "privatePackages": { "version": true, "tag": false },
+  "ignore": [
+    "hyper-effect-monorepo",
+    "@hyper-effect/example-dispatch",
+    "@hyper-effect/example-admin",
+    "linear-clone",
+    "starter"
+  ]
+}

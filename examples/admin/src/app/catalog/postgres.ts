@@ -1,5 +1,5 @@
 import { PgClient } from '@effect/sql-pg'
-import { Clock, Effect, Layer, Option, Queue, SubscriptionRef } from 'effect'
+import { Array as Arr, Clock, Effect, Layer, Option, Queue, SubscriptionRef } from 'effect'
 import { SqlClient } from 'effect/sql'
 
 import { type Product, PAGE_SIZE, type SortColumn } from './domain'
@@ -100,22 +100,23 @@ export const catalogLayer = Layer.effect(
         const [existing] = yield* sql<{ count: string }>`SELECT COUNT(*) AS count FROM products`
         if (Number(existing?.count ?? 0) === 0) {
           const now = yield* Clock.currentTimeMillis
-          yield* sql`INSERT INTO products ${sql.insert(
-            seed(now).map(product => ({
-              id: product.id,
-              sku: product.sku,
-              name: product.name,
-              category: product.category,
-              price: product.price,
-              stock: product.stock,
-              status: product.status,
-              description: product.description,
-              image: null,
-              updated_at: product.updatedAt,
-              updated_by: product.updatedBy,
-              revision: product.revision,
-            })),
-          )}`
+          const rows = seed(now).map(product => ({
+            id: product.id,
+            sku: product.sku,
+            name: product.name,
+            category: product.category,
+            price: product.price,
+            stock: product.stock,
+            status: product.status,
+            description: product.description,
+            image: null,
+            updated_at: product.updatedAt,
+            updated_by: product.updatedBy,
+            revision: product.revision,
+          }))
+          if (Arr.isArrayNonEmpty(rows)) {
+            yield* sql`INSERT INTO products ${sql.insert(rows)}`
+          }
         }
       }),
     ).pipe(Effect.orDie)
