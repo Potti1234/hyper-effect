@@ -1,0 +1,11 @@
+node_modules/
+# generated: Tailwind output and the Vite islands bundle
+**/public/styles.css
+**/public/assets/
+# run artefacts: check screenshots, logs, profiles
+output/
+# session snapshots written by Hyper.fileStore
+.hyper-sessions*/
+.DS_Store
+*.log
+*.cpuprofile

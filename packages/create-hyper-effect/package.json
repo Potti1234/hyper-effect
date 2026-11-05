@@ -1,0 +1,11 @@
+{
+  "name": "create-hyper-effect",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Creates a hyper-effect app: one page with sign-in, live shared state, a form, regions, tests and a browser check.",
+  "type": "module",
+  "bin": {
+    "create-hyper-effect": "./bin.mjs"
+  },
+  "files": ["bin.mjs", "template"]
+}

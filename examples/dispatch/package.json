@@ -1,0 +1,41 @@
+{
+  "name": "@hyper-effect/example-dispatch",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Dispatch: field incidents worked on by several dispatchers at once. Server-side pages with crease/ui, live shared state, and a MapLibre map as a Foldkit island.",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && tsx watch src/main.ts",
+    "start": "npm run build && tsx src/main.ts",
+    "start:cluster": "npm run build && tsx src/cluster.ts",
+    "build": "npm run css && npm run build:islands",
+    "css": "tailwindcss -i src/styles.css -o public/styles.css",
+    "build:islands": "vite build --config vite.islands.config.ts",
+    "typecheck": "tsc --noEmit",
+    "check:browser": "node scripts/browser-check.mjs ../../output/browser-check 300",
+    "check:dispatch": "node scripts/dispatch-check.mjs ../../output/dispatch-check 300",
+    "check:restart": "node scripts/restart-check.mjs",
+    "check:inputs": "node scripts/input-check.mjs",
+    "load-test": "node scripts/load-test.mjs"
+  },
+  "dependencies": {
+    "@effect/platform-browser": "4.0.0",
+    "@effect/platform-node": "4.0.0",
+    "@effect/sql-pg": "4.0.0",
+    "@foldkit/ui": "0.165.0",
+    "@hyper-effect/core": "*",
+    "@hyper-effect/island": "*",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "effect": "4.0.0",
+    "foldkit": "0.165.0",
+    "maplibre-gl": "^6.15.0",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.1",
+    "playwright": "1.62.1",
+    "tailwindcss": "^4.3.1",
+    "vite": "^8.3.5"
+  }
+}
