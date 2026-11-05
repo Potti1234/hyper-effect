@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib'
 import {
   ByteSize,
   Duration,
@@ -37,6 +38,7 @@ import {
 import { DISMISS_EVENT, LOCAL, LOCAL_ATTRIBUTE } from './local.ts'
 import * as Compression from './compression.ts'
 import { heartbeat, patchElements, patchSignals, runOnce } from './datastar.ts'
+import { DATASTAR_INTEGRITY, DATASTAR_SOURCE, DATASTAR_VERSION } from './datastar-bundle.ts'
 import * as Metrics from './metrics.ts'
 import { matchPath, type PageRequest, type Program } from './program.ts'
 import { sameDeps } from './deps.ts'
@@ -64,7 +66,9 @@ export type Options<R = never> = Readonly<{
   stylesheets?: ReadonlyArray<string>
   /** Module scripts loaded by the page, such as an islands bundle. */
   scripts?: ReadonlyArray<string>
-  /** Datastar client bundle. */
+  /** Datastar client bundle. By default the page loads the bundle shipped
+   *  with hyper-effect from the app's own origin
+   *  (`/_hyper/datastar-<version>.js`), so no third-party script runs. */
   datastarUrl?: string
   /** Subresource Integrity hash of `datastarUrl`; built in for the default. */
   datastarIntegrity?: string
@@ -162,10 +166,17 @@ const DEFAULT_LIMITS: Limits = {
   maxUploadFiles: 10,
 }
 
-const DEFAULT_DATASTAR_URL =
-  'https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.4/bundles/datastar.js'
-const DEFAULT_DATASTAR_INTEGRITY =
-  'sha384-twbOvafhSBQ0rJDNPzJdUw6DRvthVgAVfSIG1BQVmCiNO7Qh2zeVn7T5qstgjJ9q'
+/** The versioned path of the bundled Datastar, cached as immutable. */
+export const DATASTAR_PATH = `/_hyper/datastar-${DATASTAR_VERSION}.js`
+const DATASTAR_HEADERS = {
+  'cache-control': 'public, max-age=31536000, immutable',
+  'x-content-type-options': 'nosniff',
+  vary: 'accept-encoding',
+}
+let datastarGzip: Uint8Array | undefined
+/** Routers already serving `DATASTAR_PATH`: every page layer of an app
+ *  shares one router, and a route can be added only once. */
+const servingDatastar = new WeakSet<object>()
 
 const CONTROL_ID = 'hyper-control'
 /** Signal carrying browser effects of forwarded Commands. */
@@ -795,10 +806,9 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
       const idleTimeout = Duration.toMillis(
         Duration.fromInputUnsafe(options.idleTimeout ?? '2 minutes'),
       )
-      const datastarUrl = options.datastarUrl ?? DEFAULT_DATASTAR_URL
+      const datastarUrl = options.datastarUrl ?? DATASTAR_PATH
       const datastarIntegrity =
-        options.datastarIntegrity ??
-        (datastarUrl === DEFAULT_DATASTAR_URL ? DEFAULT_DATASTAR_INTEGRITY : undefined)
+        options.datastarIntegrity ?? (datastarUrl === DATASTAR_PATH ? DATASTAR_INTEGRITY : undefined)
       const endpoint = (id: string) => Session.endpointFor(program.name, id)
 
       const pageRequest = (
@@ -1115,6 +1125,28 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           '</body>',
           '</html>',
         ].join('\n')
+      }
+
+      if (datastarUrl === DATASTAR_PATH && !servingDatastar.has(router)) {
+        servingDatastar.add(router)
+        yield* router.add(
+          'GET',
+          DATASTAR_PATH,
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest
+            if (Compression.negotiate(request.headers['accept-encoding']) === 'gzip') {
+              datastarGzip ??= gzipSync(DATASTAR_SOURCE)
+              return HttpServerResponse.uint8Array(datastarGzip, {
+                contentType: 'text/javascript; charset=utf-8',
+                headers: { ...DATASTAR_HEADERS, 'content-encoding': 'gzip' },
+              })
+            }
+            return HttpServerResponse.text(DATASTAR_SOURCE, {
+              contentType: 'text/javascript; charset=utf-8',
+              headers: DATASTAR_HEADERS,
+            })
+          }),
+        )
       }
 
       for (const pattern of patterns) {
