@@ -10,7 +10,7 @@ No client state to sync, no API layer, no JSON contract between front and back: 
 
 ## Quick start
 
-Requires Node 22+ (and Docker only for the Postgres checks).
+Requires Node 22.19+ (and Docker only for the Postgres checks).
 
 ```sh
 npm install
@@ -65,7 +65,7 @@ Taken from [`apps/starter`](apps/starter), the app `create-hyper-effect` generat
 | [`.claude/skills/hyper-effect`](.claude/skills/hyper-effect/SKILL.md) | Agent skill: architecture, rules, workflow, API map, patterns, pitfalls. |
 | [`docs`](docs) | Guide, roadmap, performance, deployment, compatibility, design proposals. |
 
-All workspaces are TypeScript sources run with `tsx` (no build step yet) and share one copy of `effect` (4.0.0) and `foldkit` (0.165.0).
+All workspaces are TypeScript sources run with `tsx` (no build step yet) and share one copy of `effect` (4.1) and `foldkit` (0.170).
 
 ## Checks
 

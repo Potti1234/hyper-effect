@@ -5,7 +5,7 @@
   "description": "The Elm architecture on the server, on Effect: Foldkit views rendered on the server, Datastar in the browser, Foldkit islands for client-side reactivity.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19"
   },
   "workspaces": [
     "packages/*",
