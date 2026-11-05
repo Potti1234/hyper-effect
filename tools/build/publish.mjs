@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url'
    event to the NDJSON file named by CHANGESETS_OUTPUT, from which
    changesets/action pushes the tags and creates the GitHub releases.
 
-   In CI, authentication is npm trusted publishing (OIDC) or, until that is
-   set up, NODE_AUTH_TOKEN. Provenance is on when NPM_CONFIG_PROVENANCE=true. */
+   In CI, authentication is npm trusted publishing (OIDC from release.yml).
+   Provenance is on when NPM_CONFIG_PROVENANCE=true. */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const out = join(root, 'output', 'pack')
