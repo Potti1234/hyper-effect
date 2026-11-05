@@ -1,7 +1,7 @@
 import type { Attribute, ChildAttribute, Html, HtmlBuilder } from 'foldkit/html'
 import type * as Submodel from 'foldkit/submodel'
 
-import { type Binder, mapBinder, rewriteAttributes } from './binding'
+import { type Binder, mapBinder, rewriteAttributes } from './binding.ts'
 
 /* A Foldkit `HtmlBuilder` for server-driven pages. Attribute constructors are
    Foldkit's own; only the element factories differ: they rewrite event

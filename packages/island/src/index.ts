@@ -16,5 +16,5 @@
    This module is shared: the server renders islands with `view`, the browser
    registers them with `register` from `@hyper-effect/island/client`. */
 
-export * from './contract'
-export * from './view'
+export * from './contract.ts'
+export * from './view.ts'

@@ -33,14 +33,15 @@ import {
   SEQUENCE_SIGNAL,
   UPLOAD,
   UPLOAD_PATH,
-} from './binding'
-import * as Compression from './compression'
-import { heartbeat, patchElements, patchSignals, runOnce } from './datastar'
-import * as Metrics from './metrics'
-import { matchPath, type PageRequest, type Program } from './program'
-import { sameDeps } from './deps'
-import * as Security from './security'
-import * as Session from './session'
+} from './binding.ts'
+import { DISMISS_EVENT, LOCAL, LOCAL_ATTRIBUTE } from './local.ts'
+import * as Compression from './compression.ts'
+import { heartbeat, patchElements, patchSignals, runOnce } from './datastar.ts'
+import * as Metrics from './metrics.ts'
+import { matchPath, type PageRequest, type Program } from './program.ts'
+import { sameDeps } from './deps.ts'
+import * as Security from './security.ts'
+import * as Session from './session.ts'
 
 /** What a request carries for authentication. */
 export type RequestContext = Pick<PageRequest, 'cookies' | 'headers' | 'visitorId'>
@@ -48,6 +49,17 @@ export type RequestContext = Pick<PageRequest, 'cookies' | 'headers' | 'visitorI
 export type Options<R = never> = Readonly<{
   /** Path pattern of the page, such as `/incidents/:id`. Defaults to `/`. */
   path?: string
+  /** More patterns the same program serves. With the program's
+   *  `onUrlChange`, the page moves between all of them within one session
+   *  (links are taken on mousedown, back and forward work); each is also a
+   *  page of its own. */
+  paths?: ReadonlyArray<string>
+  /** URL patterns (speculation rules `href_matches`, such as `/issue/*`)
+   *  whose links the browser may prefetch when the pointer rests on them.
+   *  A prefetch (`Sec-Purpose: prefetch`) renders the page without starting
+   *  a session: none is left behind when the link is never followed, and the
+   *  page's stream starts it from the URL when it is. */
+  prefetch?: ReadonlyArray<string>
   /** Stylesheets linked from the page head. */
   stylesheets?: ReadonlyArray<string>
   /** Module scripts loaded by the page, such as an islands bundle. */
@@ -159,6 +171,10 @@ const CONTROL_ID = 'hyper-control'
 /** Signal carrying browser effects of forwarded Commands. */
 const ACTIONS_SIGNAL = '_hc'
 const RUN_ACTIONS = 'hyperRunActions'
+/** Signal carrying the intake position of each render (local effects). */
+const APPLIED_SIGNAL = '_ha'
+const APPLIED = 'hyperApplied'
+const NAVIGATE_PATH = '/nav'
 const NAVIGATE = 'hyperNavigate'
 const VISITOR_COOKIE = 'hyper-visitor'
 const VISITOR_MAX_AGE = 60 * 60 * 24 * 365
@@ -258,17 +274,243 @@ const CLIENT_SCRIPT = `(() => {
     const moved = active && active !== document.body && active !== focusAtAction && !widget?.contains(active)
     if (!moved) target.focus()
   }
+  // Dialogs, as Foldkit UI's Dom.showDialog: the rest of the page is inert
+  // and scroll is locked while one is open, Escape on the topmost becomes a
+  // cancelable cancel event, Tab stays inside, and focus returns on close.
+  // Morphs remove the inert marks (the server's markup has none), so they
+  // are put back after every patch.
+  const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]'
+  const focusables = root => [...root.querySelectorAll(FOCUSABLE)].filter(el => el.getClientRects().length > 0)
+  const dialogs = new Map()
+  let dialogStack = []
+  const topDialog = () => dialogStack[dialogStack.length - 1]
+  const isolate = () => {
+    for (const el of document.querySelectorAll('[data-hyper-inert]')) { el.inert = false; el.removeAttribute('data-hyper-inert') }
+    dialogStack = dialogStack.filter(id => document.getElementById(id))
+    const top = dialogStack.length === 0 ? null : document.getElementById(topDialog())
+    document.documentElement.style.overflow = top ? 'hidden' : ''
+    for (let node = top; node && node !== document.body && node.parentElement; node = node.parentElement) {
+      for (const sibling of node.parentElement.children) {
+        if (sibling !== node && !sibling.inert && !/^(SCRIPT|STYLE|LINK)$/.test(sibling.tagName)) {
+          sibling.inert = true
+          sibling.setAttribute('data-hyper-inert', '')
+        }
+      }
+    }
+  }
+  // Focus can move into a dialog before showDialog runs (the opening render),
+  // so remember the last element focused outside any dialog to return to.
+  let outsideFocus = null
+  document.addEventListener('focusin', evt => {
+    if (evt.target instanceof HTMLElement && !evt.target.closest('dialog')) outsideFocus = evt.target
+  })
+  const showDialog = (el, focusSelector) => {
+    if (!(el instanceof HTMLDialogElement) || !el.id) return false
+    el.style.position = 'fixed'
+    el.style.inset = '0'
+    if (!el.open) el.show()
+    if (dialogs.has(el.id)) { isolate(); return true }
+    const active = document.activeElement
+    const onKey = evt => {
+      const current = document.getElementById(el.id)
+      if (!current?.open || topDialog() !== el.id) return
+      if (evt.key === 'Escape') {
+        if (evt.defaultPrevented) return
+        evt.preventDefault()
+        current.dispatchEvent(new CustomEvent('cancel', { cancelable: true }))
+      } else if (evt.key === 'Tab') {
+        const inside = focusables(current)
+        if (inside.length === 0) { evt.preventDefault(); current.focus(); return }
+        if (evt.shiftKey && document.activeElement === inside[0]) { evt.preventDefault(); inside[inside.length - 1].focus() }
+        else if (!evt.shiftKey && document.activeElement === inside[inside.length - 1]) { evt.preventDefault(); inside[0].focus() }
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    dialogs.set(el.id, { onKey, returnFocus: active instanceof HTMLElement && active !== document.body && !el.contains(active) ? active : outsideFocus })
+    dialogStack = [...dialogStack.filter(id => id !== el.id), el.id]
+    isolate()
+    const requested = focusSelector ? el.querySelector(focusSelector) : null
+    ;(requested ?? focusables(el)[0] ?? el).focus()
+    return true
+  }
+  const releaseDialog = id => {
+    const held = dialogs.get(id)
+    if (!held) return false
+    document.removeEventListener('keydown', held.onKey)
+    dialogs.delete(id)
+    dialogStack = dialogStack.filter(other => other !== id)
+    isolate()
+    const target = held.returnFocus?.isConnected ? held.returnFocus : held.returnFocus?.id ? document.getElementById(held.returnFocus.id) : null
+    target?.focus()
+    return true
+  }
+  const closeDialog = el => {
+    if (!(el instanceof HTMLDialogElement)) return false
+    if (el.open) el.close()
+    releaseDialog(el.id)
+    return true
+  }
+  // Local effects (local.ts): applied at once, then re-applied after every
+  // morph until the server's intake position passes the event's sequence
+  // number, so a render made before the event cannot undo them.
+  const pendingLocal = []
+  const setVisible = (target, isOpen) => {
+    target.hidden = !isOpen
+    target.setAttribute('data-state', isOpen ? 'open' : 'closed')
+    if (target.id) {
+      for (const trigger of document.querySelectorAll('[aria-controls="' + CSS.escape(target.id) + '"]')) {
+        trigger.setAttribute('aria-expanded', String(isOpen))
+      }
+    }
+  }
+  const applyLocal = op => {
+    const target = (op.id && document.getElementById(op.id)) || op.target
+    if (op.kind === 'visible' && target) setVisible(target, op.isOpen)
+    else if (op.kind === 'dialog' && target) op.isOpen ? showDialog(target, op.focus) : closeDialog(target)
+    else if (op.kind === 'select') {
+      const within = document.querySelector(op.within)
+      if (within) for (const item of within.querySelectorAll(op.items)) item.setAttribute(op.attribute, String(item.id === op.selected))
+    }
+  }
+  const elementOf = (selector, el) => selector === ':scope' ? el : document.querySelector(selector)
+  const runLocal = (effects, el, sequence) => {
+    const ops = []
+    let selectedId = ''
+    for (const effect of effects) {
+      const shown = effect.show ?? effect.hide ?? effect.toggle
+      if (shown !== undefined) {
+        const target = elementOf(shown, el)
+        if (target) ops.push({ kind: 'visible', target, id: target.id, isOpen: effect.show !== undefined || (effect.toggle !== undefined && target.hidden) })
+      } else if (effect.showDialog !== undefined || effect.closeDialog !== undefined) {
+        const target = elementOf(effect.showDialog ?? effect.closeDialog, el)
+        if (target) ops.push({ kind: 'dialog', target, id: target.id, isOpen: effect.showDialog !== undefined, focus: effect.focus })
+      } else if (effect.focus !== undefined) {
+        const target = elementOf(effect.focus, el)
+        requestAnimationFrame(() => target?.focus())
+      } else if (effect.select !== undefined) {
+        const { within, by, scroll } = effect.select
+        const attribute = effect.select.attribute ?? 'data-selected'
+        const items = effect.select.items ?? '[' + attribute + ']'
+        const list = [...(document.querySelector(within)?.querySelectorAll(items) ?? [])]
+        if (list.length === 0) continue
+        const index = list.findIndex(item => item.getAttribute(attribute) === 'true')
+        const next = list[index === -1 ? (by > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, index + by))]
+        selectedId = next.id
+        ops.push({ kind: 'select', within, items, attribute, selected: next.id })
+        if (scroll !== false) next.scrollIntoView({ block: 'nearest' })
+      }
+    }
+    for (const op of ops) applyLocal(op)
+    if (ops.length > 0) pendingLocal.push({ sequence, ops })
+    return selectedId
+  }
+  window.${LOCAL} = (el, evt, sequence) => {
+    let effects
+    try { effects = JSON.parse(el.getAttribute('${LOCAL_ATTRIBUTE}') ?? '{}')[evt.type] } catch { return }
+    if (Array.isArray(effects)) runLocal(effects, el, sequence)
+  }
+  window.${APPLIED} = json => {
+    if (!json) return
+    const { p } = JSON.parse(json)
+    if (typeof p === 'number') {
+      for (let index = pendingLocal.length - 1; index >= 0; index -= 1) {
+        if (pendingLocal[index].sequence < p) pendingLocal.splice(index, 1)
+      }
+    }
+    for (const entry of pendingLocal) for (const op of entry.ops) applyLocal(op)
+    isolate()
+  }
+  // Escape or a click outside a shown panel with dismiss effects dispatches
+  // the dismiss event on it; its binding hides it locally and tells the server.
+  const dismiss = outside => {
+    for (const panel of document.querySelectorAll('[${LOCAL_ATTRIBUTE}*="${DISMISS_EVENT}"]')) {
+      if (panel.hidden || panel.closest('[hidden]')) continue
+      if (outside && (panel.contains(outside) || (panel.id && outside.closest?.('[aria-controls="' + CSS.escape(panel.id) + '"]')))) continue
+      panel.dispatchEvent(new CustomEvent('${DISMISS_EVENT}'))
+    }
+  }
+  document.addEventListener('pointerdown', evt => dismiss(evt.target), true)
+  document.addEventListener('keydown', evt => { if (evt.key === 'Escape' && !evt.defaultPrevented) dismiss(null) })
+  // A forwarded Command with replies posts its outcome, unnumbered.
+  const reply = (endpoint, id, outcome) => {
+    if (!id || !endpoint) return
+    fetch(endpoint, { method: 'POST', credentials: 'same-origin', headers: { 'Datastar-Request': 'true', 'Content-Type': 'application/json' }, body: JSON.stringify({ r: id, o: outcome }) })
+      .catch(() => console.warn('hyper-effect: reply failed'))
+  }
+  // Navigation within the session (onUrlChange): links to URLs the program
+  // serves are taken on mousedown (the server starts before the click ends),
+  // the address bar follows on click, and back/forward post the URL again.
+  // Modified clicks, other targets and downloads stay with the browser.
+  const control = () => document.getElementById('${CONTROL_ID}')
+  const inSession = url => {
+    const paths = control()?.getAttribute('data-hyper-paths')
+    if (!paths || url.origin !== location.origin) return false
+    const parts = url.pathname.split('/').filter(part => part !== '')
+    return JSON.parse(paths).some(pattern => {
+      const patternParts = pattern.split('/').filter(part => part !== '')
+      return patternParts.length === parts.length && patternParts.every((part, index) => part.startsWith(':') || part === parts[index])
+    })
+  }
+  const navigateInSession = url => {
+    const endpoint = control()?.getAttribute('data-hyper-endpoint')
+    if (!endpoint) { location.assign(url.href); return }
+    fetch(endpoint + '${NAVIGATE_PATH}', { method: 'POST', credentials: 'same-origin', headers: { 'Datastar-Request': 'true', 'Content-Type': 'application/json' }, body: JSON.stringify({ u: url.pathname + url.search }) })
+      .then(async response => {
+        if (response.status === 204) return
+        const answer = response.status === 200 ? await response.json() : {}
+        location.assign(typeof answer.load === 'string' ? answer.load : url.href)
+      })
+      .catch(() => location.assign(url.href))
+  }
+  const linkOf = evt => {
+    if (evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey || evt.defaultPrevented) return null
+    const anchor = evt.target instanceof Element ? evt.target.closest('a[href]') : null
+    if (!anchor || (anchor.target && anchor.target !== '_self') || anchor.hasAttribute('download') || anchor.hasAttribute('data-hyper-reload')) return null
+    const url = new URL(anchor.href, location.href)
+    return inSession(url) ? url : null
+  }
+  let pressedLink = null
+  document.addEventListener('mousedown', evt => {
+    const url = linkOf(evt)
+    pressedLink = url && url.href !== location.href ? url : null
+    if (pressedLink) navigateInSession(pressedLink)
+  })
+  document.addEventListener('click', evt => {
+    const url = linkOf(evt)
+    if (!url) return
+    evt.preventDefault()
+    if (url.href !== location.href) {
+      history.pushState(null, '', url.href)
+      if (pressedLink?.href !== url.href) navigateInSession(url)
+    }
+    pressedLink = null
+  })
+  // Pressed but dragged away: the page stays where the address bar is.
+  document.addEventListener('dragstart', () => {
+    if (pressedLink) { pressedLink = null; navigateInSession(new URL(location.href)) }
+  })
+  window.addEventListener('popstate', () => { if (inSession(new URL(location.href))) navigateInSession(new URL(location.href)); else location.reload() })
+  // A page restored from the back/forward cache has lost its stream, and the
+  // session may be gone; load it again rather than show a dead page.
+  window.addEventListener('pageshow', evt => { if (evt.persisted) location.reload() })
   const sameOrigin = url => { try { return new URL(url, location.href).origin === location.origin } catch { return false } }
   let lastActions = ''
-  window.${RUN_ACTIONS} = json => {
+  window.${RUN_ACTIONS} = (json, endpoint) => {
     if (!json || json === lastActions) return
     lastActions = json
     for (const action of JSON.parse(json).actions) {
       if (action.focus) focusIfStillThere(action.focus)
       if (action.scrollIntoView) document.querySelector(action.scrollIntoView)?.scrollIntoView({ block: 'nearest' })
       if (action.replaceUrl && sameOrigin(action.replaceUrl)) history.replaceState(history.state, '', action.replaceUrl)
-      if (action.load && sameOrigin(action.load)) location.assign(action.load)
+      if (action.pushUrl && sameOrigin(action.pushUrl)) history.pushState(null, '', action.pushUrl)
+      if (action.load && sameOrigin(action.load)) {
+        const url = new URL(action.load, location.href)
+        if (inSession(url)) { history.pushState(null, '', url.href); navigateInSession(url) } else location.assign(url.href)
+      }
       if (action.click) document.querySelector(action.click)?.click()
+      if (action.showDialog) reply(endpoint, action.reply, showDialog(document.querySelector(action.showDialog), action.focus) ? 'ok' : 'failed')
+      if (action.closeDialog) { closeDialog(document.querySelector(action.closeDialog)); reply(endpoint, action.reply, 'ok') }
+      if (action.releaseDialog) { releaseDialog(action.releaseDialog); reply(endpoint, action.reply, 'ok') }
     }
   }
   // Key bindings (keys.ts): the host element carries the table; matching
@@ -298,7 +540,7 @@ const CLIENT_SCRIPT = `(() => {
     }
     return keyTables.get(encoded)
   }
-  window.${KEYS} = (evt, el) => {
+  window.${KEYS} = (evt, el, sequence) => {
     const table = keyTable(el.getAttribute('data-hyper-keys') ?? '{"t":1000,"b":[]}')
     const state = sequences.get(el)
     const clear = () => { if (state) clearTimeout(state.timer); sequences.delete(el) }
@@ -314,7 +556,9 @@ const CLIENT_SCRIPT = `(() => {
     const emit = binding => {
       clear()
       if (binding.d) evt.preventDefault()
-      return binding.v ? { ...binding.x, v: document.activeElement?.id ?? '' } : binding.x
+      const targetId = document.activeElement?.id ?? ''
+      const selectedId = binding.l ? runLocal(binding.l, el, sequence) : ''
+      return binding.v ? { ...binding.x, x: [targetId, selectedId] } : binding.x
     }
     const fresh = () => {
       const single = table.b.find(binding => binding.p.length === 1 && allowed(binding) &&
@@ -438,6 +682,7 @@ type Restored<Model, Message> =
 const refused = { _tag: 'Refused' } as const
 
 const decodePayload = Schema.decodeUnknownEffect(Session.EventPayload)
+const decodeNavigation = Schema.decodeUnknownEffect(Schema.Struct({ u: Schema.String }))
 const decodePendingInputs = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 )
@@ -546,7 +791,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         }
         return { sessions: sessions.size, connections, handlerTables, regions }
       })
-      const path = options.path ?? '/'
+      const patterns = [options.path ?? '/', ...(options.paths ?? [])]
       const idleTimeout = Duration.toMillis(
         Duration.fromInputUnsafe(options.idleTimeout ?? '2 minutes'),
       )
@@ -561,7 +806,9 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         visitorId: string,
         request: HttpServerRequest.HttpServerRequest,
       ): Option.Option<PageRequest> =>
-        Option.fromNullishOr(matchPath(path, url.pathname)).pipe(
+        Option.fromNullishOr(
+          patterns.map(pattern => matchPath(pattern, url.pathname)).find(params => params !== undefined),
+        ).pipe(
           Option.map(params => ({
             url,
             params,
@@ -736,6 +983,17 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           Effect.provideContext(services),
         )
 
+      /** A prefetch: the page as `start` would render it, without
+       *  registering a session or running init's Commands. */
+      const preview = (id: string, request: PageRequest) =>
+        program.flags(request).pipe(
+          Effect.flatMap(flags =>
+            Session.make(program, id, { model: program.init(flags).model, firstSequence: 1 }),
+          ),
+          Effect.flatMap(session => session.render.pipe(Effect.orDie, Effect.ensuring(session.close))),
+          Effect.provideContext(services),
+        )
+
       const notifyConnection = (entry: Entry<Model, Message>, isConnected: boolean) =>
         program.onConnectionChange === undefined
           ? Effect.void
@@ -838,22 +1096,32 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           `<style nonce="${nonce}">${CLIENT_STYLE}</style>`,
           `<script nonce="${nonce}">${CLIENT_SCRIPT}</script>`,
           `<script type="module" nonce="${nonce}" src="${escapeAttribute(datastarUrl)}"${integrity}></script>`,
+          ...(options.prefetch === undefined || options.prefetch.length === 0
+            ? []
+            : [
+                `<script type="speculationrules" nonce="${nonce}">${JSON.stringify({
+                  prefetch: [{ where: { href_matches: options.prefetch }, eagerness: 'moderate' }],
+                }).replace(/</g, '\\u003c')}</script>`,
+              ]),
           ...(options.scripts ?? []).map(
             src => `<script type="module" nonce="${nonce}" src="${escapeAttribute(src)}"></script>`,
           ),
           '</head>',
           '<body>',
-          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-effect="window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')"></div>`,
+          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')" data-hyper-endpoint="${endpoint(id)}"${
+            program.onUrlChange === undefined ? '' : ` data-hyper-paths="${escapeAttribute(JSON.stringify(patterns))}"`
+          }></div>`,
           rendered.html,
           '</body>',
           '</html>',
         ].join('\n')
       }
 
+      for (const pattern of patterns) {
       yield* router.add(
         'GET',
         /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
-        path as HttpRouter.PathInput,
+        pattern as HttpRouter.PathInput,
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest
           const url = new URL(request.url, 'http://localhost')
@@ -884,6 +1152,29 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
               headers: { 'retry-after': '10' },
             })
           }
+          const purpose = request.headers['sec-purpose'] ?? request.headers['purpose'] ?? ''
+          if (/prefetch/i.test(purpose)) {
+            const id = newSessionId()
+            const previewed = yield* preview(id, matched.value).pipe(
+              Effect.map(rendered => ({ _tag: 'Rendered', rendered }) as const),
+              Effect.catchTag('PageNotFound', () => Effect.succeed({ _tag: 'NotFound' } as const)),
+              Effect.catchTag('PageRedirect', ({ location, status }) =>
+                Effect.succeed({ _tag: 'Redirect', location, status } as const),
+              ),
+            )
+            if (previewed._tag === 'NotFound') return notFound
+            if (previewed._tag === 'Redirect') {
+              return withVisitor(
+                HttpServerResponse.redirect(previewed.location, { status: previewed.status ?? 303 }),
+              )
+            }
+            const nonce = Security.makeNonce()
+            return withVisitor(
+              HttpServerResponse.html(page(previewed.rendered, id, url, nonce)).pipe(
+                HttpServerResponse.setHeaders(securityHeaders(nonce)),
+              ),
+            )
+          }
           const principal = yield* principalOf(request, visitorId)
           const started = yield* start(newSessionId(), matched.value, principal).pipe(
             Effect.map(entry => ({ _tag: 'Started', entry }) as const),
@@ -904,8 +1195,11 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           const rendered = yield* entry.session.render
           const nonce = Security.makeNonce()
           return withVisitor(
+            // The page names a live session and starts its events at 1; a copy
+            // reloaded from the HTTP cache (history navigation) would replay
+            // sequence numbers the session has already applied.
             HttpServerResponse.html(page(rendered, entry.session.id, url, nonce)).pipe(
-              HttpServerResponse.setHeaders(securityHeaders(nonce)),
+              HttpServerResponse.setHeaders({ ...securityHeaders(nonce), 'cache-control': 'no-store' }),
             ),
           )
         }).pipe(
@@ -916,6 +1210,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           ),
         ),
       )
+      }
 
       yield* router.add(
         'GET',
@@ -949,6 +1244,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           entry.connections += 1
           entry.everConnected = true
           let actionBatches = 0
+          let renders = 0
           if (entry.connections === 1) {
             yield* notifyConnection(entry, true)
           }
@@ -965,13 +1261,18 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
             // A burst of changes costs one render, never a backlog.
             Stream.buffer({ capacity: 1, strategy: 'sliding' }),
             Stream.mapEffect(() => entry.session.render),
-            Stream.map(({ html, frame, regions, title, signals, actions }) => {
-              // Forwarded Commands run in the browser after this morph.
+            Stream.map(({ html, frame, regions, title, signals, actions, position }) => {
+              // After this morph the page re-applies local effects the
+              // render does not reflect yet, then runs forwarded Commands.
+              const withApplied = {
+                ...signals,
+                [APPLIED_SIGNAL]: JSON.stringify({ n: (renders += 1), p: position ?? null }),
+              }
               const withActions =
                 actions.length === 0
-                  ? signals
+                  ? withApplied
                   : {
-                      ...signals,
+                      ...withApplied,
                       [ACTIONS_SIGNAL]: JSON.stringify({ n: (actionBatches += 1), actions }),
                     }
               const elements: Array<string> = []
@@ -1077,6 +1378,60 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           if (Object.keys(payload.p ?? {}).length > limits.maxPendingInputs) return refuse(400)
           yield* entry.session.receive(payload)
           if (durableEvents) yield* saveSnapshot(entry)
+          entry.lastSeen = Date.now()
+          return refuse(204)
+        }).pipe(Effect.catch(() => Effect.succeed(refuse(400)))),
+      )
+
+      // Navigation within the session (`onUrlChange`): the page posts the
+      // URL it went to. 204: the session took it; `{ load }`: load a page.
+      yield* router.add(
+        'POST',
+        `/_hyper/${program.name}/s/:id${NAVIGATE_PATH}`,
+        Effect.gen(function* () {
+          const { id = '' } = yield* HttpRouter.params
+          const request = yield* HttpServerRequest.HttpServerRequest
+          const visitorId = request.cookies[VISITOR_COOKIE]
+          if (!SESSION_ID.test(id)) return refuse(400)
+          if (
+            request.headers['datastar-request'] !== 'true' ||
+            visitorId === undefined ||
+            !Security.isSameSite(request, allowedOrigins, trustProxy)
+          ) {
+            return refuse(403)
+          }
+          const principal = yield* principalOf(request, visitorId)
+          const found = yield* find(id, request, Option.none(), visitorId, principal)
+          if (found._tag === 'Forbidden') return refuse(403)
+          if (found._tag !== 'Restored') return refuse(410)
+          const entry = found.entry
+          if (entry.principal !== principal) {
+            yield* close(id, entry)
+            return refuse(410)
+          }
+          if (!Security.take(entry.events, limits.eventsPerSecond, limits.eventBurst, Date.now())) {
+            return refuse(429)
+          }
+          const { u } = yield* request.json.pipe(
+            Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(limits.maxBodyBytes)),
+            Effect.flatMap(decodeNavigation),
+          )
+          // A path of this origin only; anything else is not a navigation.
+          if (!u.startsWith('/') || u.startsWith('//')) return refuse(400)
+          const load = (location: string) => HttpServerResponse.jsonUnsafe({ load: location })
+          const onUrlChange = program.onUrlChange
+          const page = pageRequest(new URL(u, 'http://localhost'), visitorId, request)
+          if (onUrlChange === undefined || Option.isNone(page)) return load(u)
+          const changed = yield* onUrlChange(page.value).pipe(
+            Effect.provideContext(services),
+            Effect.map(message => ({ _tag: 'Message' as const, message })),
+            Effect.catchTags({
+              PageNotFound: () => Effect.succeed({ _tag: 'Load' as const, location: u }),
+              PageRedirect: ({ location }) => Effect.succeed({ _tag: 'Load' as const, location }),
+            }),
+          )
+          if (changed._tag === 'Load') return load(changed.location)
+          yield* entry.session.dispatch(changed.message)
           entry.lastSeen = Date.now()
           return refuse(204)
         }).pipe(Effect.catch(() => Effect.succeed(refuse(400)))),

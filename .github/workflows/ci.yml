@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run check:pack
+      - run: npm run check:crease
+
+  browser:
+    runs-on: ubuntu-latest
+    env:
+      APP_SECRET: ci-app-secret-0123456789abcdef0123456789
+      HYPER_SNAPSHOT_SECRET: ci-snapshot-secret-0123456789abcdef01234
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Linear clone
+        working-directory: apps/linear-clone
+        run: |
+          NODE_ENV=production PORT=4100 npm start > ../../linear-clone.log 2>&1 &
+          for attempt in $(seq 1 60); do curl -sf -o /dev/null http://localhost:4100/login && break; sleep 1; done
+          npm run check
+      - name: Starter
+        working-directory: apps/starter
+        run: |
+          NODE_ENV=production PORT=4000 npm start > ../../starter.log 2>&1 &
+          for attempt in $(seq 1 60); do curl -sf -o /dev/null http://localhost:4000/login && break; sleep 1; done
+          npm run check
+      - if: failure()
+        run: tail -n 100 linear-clone.log starter.log

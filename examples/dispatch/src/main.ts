@@ -1,6 +1,6 @@
 import { NodeHttpServer, NodeRuntime, NodeServices } from '@effect/platform-node'
 import { PgClient } from '@effect/sql-pg'
-import { FileSystem, Layer, Path, Redacted } from 'effect'
+import { type FileSystem, Layer, type Path, Redacted } from 'effect'
 import { HttpRouter, HttpServerResponse, HttpStaticServer } from 'effect/http'
 import { KeyValueStore } from 'effect/persistence'
 import { createServer } from 'node:http'
@@ -27,7 +27,7 @@ const secured: Hyper.Options = {
   stylesheets: ['/styles.css'],
   ...(node === undefined ? {} : { node }),
   // Sealed snapshots: the session store sees neither Models nor visitors.
-  snapshotSecret: process.env['HYPER_SNAPSHOT_SECRET'] ?? 'hyper-dev-secret, set HYPER_SNAPSHOT_SECRET',
+  snapshotSecret: Hyper.secretFromEnvironment('HYPER_SNAPSHOT_SECRET', 'hyper-dev-secret, set HYPER_SNAPSHOT_SECRET'),
   durableEvents: Levers.durableEvents,
   compression: Levers.compression,
   // Load tests open hundreds of pages from one address.

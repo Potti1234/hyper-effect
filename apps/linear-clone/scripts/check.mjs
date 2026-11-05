@@ -114,6 +114,38 @@ try {
   }))
   await visit(ada.page, '/team/ENG')
 
+  // The sidebar moves between list scopes within the session: no page load,
+  // the same session, and back returns to the team.
+  await settle(ada.page)
+  const sessionBefore = await ada.page.evaluate(() => {
+    window.hyperCheckMarker = true
+    return document.getElementById('hyper-control')?.getAttribute('data-hyper-endpoint')
+  })
+  await ada.page.locator('nav a[href="/my-issues"]').first().click()
+  check('a sidebar link moves to My issues within the session', await ada.page.waitForURL('**/my-issues', { timeout: TIMEOUT }).then(() => true, () => false) && await until(ada.page, () => {
+    const rows = [...document.querySelectorAll('#issue-list [id^="row-"]')]
+    return rows.length > 0 && rows.every(row => row.querySelector('[aria-label="Assignee: Ada Lovelace"]') !== null)
+  }) && await ada.page.evaluate(endpoint => window.hyperCheckMarker === true && document.getElementById('hyper-control')?.getAttribute('data-hyper-endpoint') === endpoint, sessionBefore))
+  await ada.page.goBack()
+  check('back returns to the team list in the same session', await ada.page.waitForURL('**/team/ENG', { timeout: TIMEOUT }).then(() => true, () => false) && await until(ada.page, () => document.querySelector('#issue-list [id^="row-ENG-"]') !== null && document.querySelector('#issue-list [id^="row-DES-"]') === null && window.hyperCheckMarker === true))
+
+  // An issue page, then back: the list is a fresh page (never a cached copy
+  // replaying the old session's event numbers), so shortcuts still work.
+  await ada.page.keyboard.press('j')
+  await settle(ada.page)
+  await ada.page.keyboard.press('Enter')
+  await ada.page.waitForURL('**/issue/**', { timeout: TIMEOUT })
+  await settle(ada.page)
+  const reopened = ada.page.waitForRequest(request => request.url().includes('/stream'))
+  await ada.page.goBack()
+  await reopened
+  await settle(ada.page)
+  await ada.page.keyboard.press('j')
+  await ada.page.keyboard.press('s')
+  check('after an issue page and back, s opens the status picker', await until(ada.page, () => document.activeElement?.id === 'picker-input'))
+  await ada.page.keyboard.press('Escape')
+  await until(ada.page, () => document.querySelector('#picker') === null)
+
   // CREATE ISSUE
   await ada.page.keyboard.press('c')
   check('c opens the new issue dialog with the title focused', await until(ada.page, () => document.activeElement?.id === 'draft-title'))
@@ -254,6 +286,30 @@ try {
   await settle(ada.page)
   await ada.page.keyboard.press('Escape')
   check('Esc on an issue goes back to its list', await ada.page.waitForURL('**/team/ENG', { timeout: TIMEOUT }).then(() => true, () => false))
+
+  // j moves the selection in the page itself (a local effect), before the
+  // server has seen the key; the server then agrees.
+  await ada.page.waitForFunction(() => document.querySelector('#hyper-keys[data-hyper-keys]') !== null)
+  await settle(ada.page)
+  const moved = await ada.page.evaluate(() => {
+    const before = document.querySelector('#issue-list [data-selected="true"]')?.id
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true }))
+    const after = document.querySelector('#issue-list [data-selected="true"]')?.id
+    return after !== undefined && after !== before ? after : undefined
+  })
+  check('j moves the selection before the server answers', moved !== undefined)
+  await settle(ada.page)
+  check('the server agrees with the moved selection', await ada.page.evaluate(id => document.querySelector('#issue-list [data-selected="true"]')?.id === id, moved))
+
+  // ? opens the shortcuts dialog: a styled crease dialog whose ShowDialog
+  // runs in the page and replies to the server.
+  await ada.page.focus('#layout-list')
+  await ada.page.keyboard.press('Shift+?')
+  check('? opens the styled shortcuts dialog with focus inside', await until(ada.page, () => document.querySelector('#shortcuts-help')?.open === true && document.activeElement?.closest('#shortcuts-help') != null))
+  check('the rest of the page is inert while it is open', await ada.page.evaluate(() => document.querySelector('#issue-list')?.closest('[inert]') != null))
+  await ada.page.keyboard.press('Escape')
+  check('Esc closes it and the page is usable again', await until(ada.page, () => document.querySelector('#shortcuts-help')?.open === false && document.querySelector('[inert]') === null))
+  check('focus returns to what had it before the dialog opened', await until(ada.page, () => document.activeElement?.id === 'layout-list'))
 
   // The ⋯ menu (crease dropdown-menu, activateOnHover: false): hover is CSS,
   // so moving over its items sends nothing; choosing an item works.

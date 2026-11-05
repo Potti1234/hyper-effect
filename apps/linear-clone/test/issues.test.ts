@@ -183,6 +183,35 @@ describe('issues: update (Story)', () => {
     assert.strictEqual(order[0]!.status, 'in_review')
   })
 
+  it('takes the row the page already moved the selection to', () => {
+    const start = model()
+    const order = Issues.navigationOrder(start)
+    Story.story(
+      Issues.updateModel,
+      Story.given(start),
+      // A local effect moved data-selected; no ScrollIntoView, the page scrolled.
+      Story.message(Issues.Message.MovedSelection({ elementId: `row-${order[2]!.identifier}` })),
+      Story.model(next => assert.strictEqual(next.selectedId, order[2]!.id)),
+      Story.message(Issues.Message.MovedSelection({ elementId: 'row-GONE-1' })),
+      Story.model(next => assert.strictEqual(next.selectedId, order[2]!.id)),
+    )
+  })
+
+  it('moves to another scope within the session', () => {
+    Story.story(
+      Issues.updateModel,
+      Story.given({ ...model(), selectedId: model().issues[0]!.id }),
+      Story.message(
+        Issues.Message.ChangedUrl({ scope: { _tag: 'Mine' }, query: queryFromUrl(new URL('http://localhost/my-issues?q=crash')) }),
+      ),
+      Story.model(next => {
+        assert.deepStrictEqual(next.scope, { _tag: 'Mine' })
+        assert.strictEqual(next.query.search, 'crash')
+        assert.isNull(next.selectedId)
+      }),
+    )
+  })
+
   it('runs palette commands', () => {
     Story.story(
       Issues.updateModel,
@@ -211,7 +240,7 @@ describe('domain: the query in the URL', () => {
 
 describe('issues: the page over HTTP', () => {
   const cookie = `${USER_COOKIE_NAME}=${cookieValue('Ada')}`
-  const served = () => serve(Issues.teamProgram, { path: '/team/:team' }, undefined, Store.layer)
+  const served = () => serve(Issues.program, { path: '/team/:team', paths: Issues.paths }, undefined, Store.layer)
 
   it('sends a signed-out visitor to sign in, and answers 404 for an unknown team', async () => {
     const server = served()

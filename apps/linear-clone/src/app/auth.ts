@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import { Effect, Layer } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
-import { PageRedirect, type PageRequest, type RequestContext } from '@hyper-effect/core'
+import { PageRedirect, type PageRequest, type RequestContext, secretFromEnvironment } from '@hyper-effect/core'
 
 /* Demo sign-in: any name, no password. The name travels in an HMAC-signed,
    HttpOnly cookie:
@@ -13,7 +13,7 @@ import { PageRedirect, type PageRequest, type RequestContext } from '@hyper-effe
    three exports. */
 
 const USER_COOKIE = 'linear-clone-user'
-const SECRET = process.env['APP_SECRET'] ?? 'dev-secret, set APP_SECRET'
+const SECRET = secretFromEnvironment('APP_SECRET', 'dev-secret, set APP_SECRET')
 const MAX_AGE = 60 * 60 * 12
 
 const signature = (name: string) => createHmac('sha256', SECRET).update(name).digest()

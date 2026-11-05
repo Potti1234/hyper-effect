@@ -3,7 +3,7 @@ import type { Document, HtmlBuilder } from 'foldkit/html'
 import type { Subscriptions } from 'foldkit/subscription'
 import type { Return } from 'foldkit/update'
 
-import type { ClientCommands } from './client-commands'
+import type { ClientCommands } from './client-commands.ts'
 
 /** The request a page is rendered for: the full URL, the path parameters
  *  matched by the program's path pattern, a stable id for the browser (an
@@ -67,6 +67,14 @@ export interface Program<
    *  on it (presence, expensive feeds). A session outlives its connection by
    *  the idle timeout. */
   readonly onConnectionChange?: (isConnected: boolean) => Message
+  /** Navigation within the session: the browser went to another URL that
+   *  this program serves (a link, back/forward, a `load` Command), and this
+   *  turns it into a Message instead of loading a new page. Like `flags` it
+   *  may read the request and fail with PageNotFound or PageRedirect, which
+   *  load the URL as a page. Without it every URL change is a page load. */
+  readonly onUrlChange?: (
+    request: PageRequest,
+  ) => Effect.Effect<Message, PageNotFound | PageRedirect, R>
   /** Browser-only Commands to forward to the page instead of running them
    *  (see `client-commands.ts`); Foldkit UI's focus Commands are built in. */
   readonly clientCommands?: ClientCommands
@@ -79,6 +87,7 @@ export interface Program<
   readonly snapshotDeps?: (model: Model) => ReadonlyArray<unknown>
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- any program, whatever its types
 export type AnyProgram = Program<any, any, any, any, any>
 
 /** Matches `pathname` against a pattern such as `/incidents/:id`. */

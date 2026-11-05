@@ -26,7 +26,7 @@ const page: Hyper.Options = {
   stylesheets: ['/styles.css'],
   // Sessions belong to the signed-in user; signing out ends them.
   principal: Auth.principal,
-  snapshotSecret: process.env['HYPER_SNAPSHOT_SECRET'] ?? 'dev-snapshot-secret, set HYPER_SNAPSHOT_SECRET',
+  snapshotSecret: Hyper.secretFromEnvironment('HYPER_SNAPSHOT_SECRET', 'dev-snapshot-secret, set HYPER_SNAPSHOT_SECRET'),
 }
 
 const Routes = Layer.mergeAll(

@@ -165,7 +165,7 @@ Three phases. Phase A can still change the API or the wire protocol, so it comes
 ## Upstream asks
 
 - **Foldkit:**
-  - a public `serializeHtml`, or `renderToString({ validate: false })`;
+  - a public `serializeHtml`, or `renderToString({ validate: false })` ([draft issue](upstream/foldkit-public-serializer.md));
   - the injected `HtmlBuilder` and `ChildAttribute.boundaryMappers` as supported API;
   - possibly an official hook for how events are bound;
   - no `captureCallSite` stack traces for every Submodel on every render in production;

@@ -82,6 +82,9 @@ Unit and property tests run with `npm test`. Browser checks drive Chromium (Play
 | `npm run check:compat` | renders every crease/ui demo on the server → [docs/compatibility.md](docs/compatibility.md) (needs crease checked out at `../crease`) |
 | `npm run perf:load -- 200 1 15` | load test: pages, changes per second, seconds (`perf:profile` adds a CPU profile) |
 | `cd apps/<app> && npm run check` | each app's own browser check (needs that app's `npm start`) |
+| `npm run lint` | ESLint (typescript-eslint) over packages, apps and examples |
+| `npm run check:pack` | builds the packages and imports every entry point from `dist` under plain Node |
+| `npm run check:crease` | compares the `src/ui` copies with creaseui at the commit in `tools/crease/upstream.json` |
 
 Check artefacts (screenshots, logs, profiles) go to `output/`, which is git-ignored.
 
@@ -92,7 +95,8 @@ Check artefacts (screenshots, logs, profiles) go to `output/`, which is git-igno
 - [Performance](docs/performance.md) — method, measurements, profile, levers tried and open.
 - [Deployment](docs/deployment.md) — production mode, proxies, HTTP/2, multiple nodes, Postgres.
 - [Compatibility](docs/compatibility.md) — which crease/ui components run on the server.
-- [Design: latency](docs/design-latency.md) — proposal for screen-only interactions without a round trip and in-session navigation.
+- [Design: latency](docs/design-latency.md) — local effects, forwarded replies, navigation within a session and prefetch; browser-run Submodels as the next step.
+- [Hardening log](docs/hardening-log.md) — every check and latency measurement behind that work.
 - [crease changes](docs/crease-changes.md), [crease journal](docs/crease-journal.md) — what building on crease/ui fed back into it.
 - [Research notes](RESEARCH.md) — the original survey (htmx, Datastar, templ, Effect) and early decisions.
 
@@ -102,7 +106,11 @@ Check artefacts (screenshots, logs, profiles) go to `output/`, which is git-igno
 
 **Measured (laptop, production mode):** one change reaches 200 open pages at p95 ≈ 95 ms on one process, ≈ 70 ms with 2 workers; 1000 pages ≈ 220 ms with 3 workers. Every interaction costs one network round trip plus ~20 ms.
 
-**Open before 0.1:** a decision on the [latency proposal](docs/design-latency.md) (menus and selection without a round trip, navigation within a session — this changes the API); API freeze and built, versioned packages; CI; lint rules; upstream asks to Foldkit (public serializer, supported injected `HtmlBuilder`), crease and Datastar (CSP-safe mode, so `'unsafe-eval'` can go). Not yet tested: Safari and mobile browsers, Caddy, HTTP/3, Redis, server hardware.
+**Screen-only interactions and navigation:** a closed set of local effects (show/hide/toggle, focus, dialogs, roving selection) runs in the browser and the server is told afterwards; forwarded Commands report back, so crease's styled dialogs run with their update on the server; Programs serve several paths and navigate within one session; speculation-rules prefetch without orphan sessions. At 80 ms RTT `j`/`k` went from 87 ms to 0 ms, opening a prefetched issue from 158 ms to 76 ms ([design-latency.md](docs/design-latency.md)).
+
+**Foundations:** CI (typecheck, lint, tests, pack, creaseui drift, browser checks in production mode); `npm run build` emits `dist/` and `npm run check:pack` imports it under plain Node; production refuses development secrets (`secretFromEnvironment`); the creaseui copies are checked against a pinned creaseui commit.
+
+**Open before 0.1:** API freeze and a versioning/publishing decision (packages are 0.0.0); browser-run Submodels for richer components such as pickers (design-latency section 6); upstream asks to Foldkit ([public serializer](docs/upstream/foldkit-public-serializer.md), supported injected `HtmlBuilder`) and Datastar (a CSP-safe mode, so `'unsafe-eval'` can go); the remaining type assertions. Not yet tested: Safari and mobile browsers, Caddy, HTTP/3, Redis, server hardware.
 
 ## License
 

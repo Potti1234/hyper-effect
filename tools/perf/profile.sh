@@ -15,6 +15,7 @@ mkdir -p "$root/output"
 cd "$root/examples/dispatch" || exit 1
 
 rm -rf .hyper-sessions
+. "$root/tools/secrets.sh"
 PORT=$port DISPATCH_PRESENCE_SAMPLE_SECONDS=${PRESENCE:-2} NODE_ENV=production HYPER_METRICS=1 \
   node --import tsx src/main.ts > "$root/output/load-server.log" 2>&1 &
 server=$!

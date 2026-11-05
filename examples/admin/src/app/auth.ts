@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import { Effect, Layer, Schema as S } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
-import { PageRedirect, type PageRequest, type RequestContext } from '@hyper-effect/core'
+import { PageRedirect, type PageRequest, type RequestContext, secretFromEnvironment } from '@hyper-effect/core'
 
 /* Demo sign-in: two seeded users, no passwords. An editor may change the
    catalog, a viewer may only look. The name travels in an HMAC-signed,
@@ -26,7 +26,7 @@ export const USERS: ReadonlyArray<User> = [
 export const canEdit = (user: User): boolean => user.role === 'editor'
 
 const USER_COOKIE = 'admin-user'
-const SECRET = process.env['ADMIN_SECRET'] ?? 'admin-dev-secret, set ADMIN_SECRET'
+const SECRET = secretFromEnvironment('ADMIN_SECRET', 'admin-dev-secret, set ADMIN_SECRET')
 const MAX_AGE = 60 * 60 * 12
 
 const signature = (name: string) => createHmac('sha256', SECRET).update(name).digest()

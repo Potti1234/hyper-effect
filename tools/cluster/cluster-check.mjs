@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { chromium } from 'playwright'
 
+import { secrets } from '../secrets.mjs'
 import { startBalancer } from './balancer.mjs'
 
 /* Experiment 5, part 2: two Dispatch nodes behind a load balancer, sharing
@@ -42,7 +43,7 @@ const startNode = port => {
   const log = openSync(join(root, 'output', `cluster-node-${port}.log`), 'w')
   return spawn(process.execPath, ['--import', 'tsx', 'src/main.ts'], {
     cwd: app,
-    env: { ...process.env, PORT: String(port), NODE_ENV: 'production' },
+    env: { ...process.env, ...secrets, PORT: String(port), NODE_ENV: 'production' },
     stdio: ['ignore', log, log],
   })
 }
@@ -157,7 +158,7 @@ try {
     nodes.forEach(stopNode)
     const primary = spawn(process.execPath, ['--import', 'tsx', 'src/cluster.ts'], {
       cwd: app,
-      env: { ...process.env, PORT: String(PORT), WORKERS: '2', NODE_ENV: 'production', HYPER_METRICS: '1' },
+      env: { ...process.env, ...secrets, PORT: String(PORT), WORKERS: '2', NODE_ENV: 'production', HYPER_METRICS: '1' },
       stdio: ['ignore', openSync(join(root, 'output', 'cluster-router.log'), 'w'), openSync(join(root, 'output', 'cluster-router.log'), 'a')],
     })
     try {

@@ -1,4 +1,4 @@
-import { Clock, Context, Data, Effect, Layer, Schema as S, Stream, SubscriptionRef } from 'effect'
+import { Clock, Context, Data, Effect, Layer, Schema as S, type Stream, SubscriptionRef } from 'effect'
 
 /* The task store: the app's shared state, which every page shows live.
 

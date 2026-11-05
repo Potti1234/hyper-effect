@@ -9,6 +9,8 @@ import { PageNotFound, type PageRequest, type Program, keyBindings, memoizeLast,
 import * as Icon from '@/lib/icon'
 import { cn } from '@/lib/utils'
 import { button } from '@/ui/button'
+import * as Dialog from '@/ui/dialog'
+import { kbd } from '@/ui/kbd'
 import { input } from '@/ui/input'
 import { renderTextarea } from '@/lib/textarea'
 
@@ -50,9 +52,10 @@ import * as Picker from '../view/picker'
 import { decodeTeam, patchFor, propertyIcon, propertyItems, valuesOf } from '../view/properties'
 import { type NavCounts, VIEWS, hint, sidebar } from '../view/shell'
 
-/* The issue list and board: one program, mounted three times (a team's
-   issues, My issues, All issues). Everything a user does here is a Message
-   handled on the server:
+/* The issue list and board: one program for a team's issues, My issues and
+   All issues. Moving between them stays in the session (onUrlChange): the
+   sidebar's links change the scope instead of loading a page. Everything a
+   user does here is a Message handled on the server:
    - the shared list arrives live through a Subscription on the workspace;
    - filters, search and the layout live in the Model and in the address bar;
    - the keyboard island reports shortcuts (c, j/k, Enter, s/p/a/l, /, Ctrl+K);
@@ -101,6 +104,8 @@ export const Model = S.Struct({
   dragging: S.NullOr(S.String),
   dropTarget: S.NullOr(Status),
   seq: S.Number,
+  /** The keyboard shortcuts dialog (`?`), a crease dialog. */
+  help: Dialog.Model,
 })
 export type Model = typeof Model.Type
 
@@ -136,6 +141,10 @@ export const Message = defineMessageUnion({
   DroppedOnColumn: { status: Status },
   EndedDrag: {},
   PressedShortcut: { shortcut: Shortcut, targetId: S.String },
+  /** The page already moved the selection to this row (a local effect). */
+  MovedSelection: { elementId: S.String },
+  ChangedUrl: { scope: Scope, query: Query },
+  GotHelpDialog: { message: Dialog.Message },
   GotWorkspace: { members: S.Array(Member), issues: S.Array(Issue) },
   SucceededCreate: { id: S.String, identifier: S.String },
   FailedCreate: { reason: S.String },
@@ -166,6 +175,8 @@ export const ClientMessage = S.Union([
   Message.EnteredColumn,
   Message.DroppedOnColumn,
   Message.EndedDrag,
+  // The dialog's own bindings; its Command results never come from the page.
+  S.TaggedStruct('GotHelpDialog', { message: Dialog.Message.RequestedClose }),
 ])
 export type ClientMessage = typeof ClientMessage.Type
 
@@ -275,6 +286,7 @@ export const init = (flags: Flags): Update.Return<Model, Message, Workspace> => 
     dragging: null,
     dropTarget: null,
     seq: 0,
+    help: Dialog.init({ id: 'shortcuts-help' }),
   }
   return flags.isCreating ? openDraft(model, null) : { model }
 }
@@ -561,7 +573,9 @@ const onShortcut = (model: Model, shortcut: Shortcut, targetId: string): UpdateR
         ? { model: { ...model, picker: null } }
         : openPicker({ ...model, draft: model.draft }, Picker.open('command', 'palette', [], null))
     case 'escape':
-      return model.picker !== null
+      return model.help.isOpen
+        ? withHelp(model, Dialog.close(model.help))
+        : model.picker !== null
         ? { model: { ...model, picker: null } }
         : model.draft !== null
           ? { model: { ...model, draft: null } }
@@ -576,8 +590,15 @@ const onShortcut = (model: Model, shortcut: Shortcut, targetId: string): UpdateR
       return { model, commands: [LoadUrl({ url: '/team/DES' })] }
     case 'toggleLayout':
       return withQuery(model, { ...model.query, layout: model.query.layout === 'board' ? 'list' : 'board' })
+    case 'help':
+      return withHelp(model, Dialog.open(model.help))
   }
 }
+
+const withHelp = (model: Model, helpUpdate: ReturnType<typeof Dialog.update>): UpdateReturn => ({
+  model: { ...model, help: helpUpdate.model },
+  commands: Command.mapMessages(helpUpdate.commands, message => Message.GotHelpDialog({ message })),
+})
 
 const submitDraft = (model: Model): UpdateReturn => {
   const draft = model.draft
@@ -669,6 +690,14 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
       },
       EndedDrag: () => ({ model: { ...model, dragging: null, dropTarget: null } }),
       PressedShortcut: ({ shortcut, targetId }) => onShortcut(model, shortcut, targetId),
+      GotHelpDialog: ({ message }) => withHelp(model, Dialog.update(model.help, message)),
+      MovedSelection: ({ elementId }) => {
+        const issue = navigationOrder(model).find(candidate => `row-${candidate.identifier}` === elementId)
+        return { model: issue === undefined ? model : { ...model, selectedId: issue.id } }
+      },
+      ChangedUrl: ({ scope, query }) => ({
+        model: { ...model, scope, query, selectedId: null, picker: null, focus: null },
+      }),
       GotWorkspace: ({ members, issues }) => {
         const me = members.find(member => member.id === model.me.id) ?? model.me
         // A selection or picker on an issue someone deleted goes away.
@@ -910,7 +939,8 @@ const issueRow = (issue: Issue, assignee: Member | undefined, isSelected: boolea
       h.Class(
         cn(
           'group relative flex h-[38px] items-center gap-2 border-b border-border/60 pr-4 pl-3 text-[13px] transition-colors hover:bg-accent/60',
-          isSelected && 'bg-accent before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-primary',
+          // Styled from data-selected, which the page moves before the server answers.
+          'data-[selected=true]:bg-accent data-[selected=true]:before:absolute data-[selected=true]:before:inset-y-0 data-[selected=true]:before:left-0 data-[selected=true]:before:w-0.5 data-[selected=true]:before:bg-primary',
         ),
       ),
     ],
@@ -1352,12 +1382,49 @@ const filterField = (value: string): Picker.PickerField => {
   return dimension === 'status' ? 'status' : dimension === 'priority' ? 'priority' : dimension === 'assignee' ? 'assignee' : 'labels'
 }
 
+const HELP_SHORTCUTS: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+  [['J', 'K'], 'Move the selection'],
+  [['Enter'], 'Open the selected issue'],
+  [['C'], 'Create an issue'],
+  [['S'], 'Change status'],
+  [['P'], 'Change priority'],
+  [['A'], 'Change assignee'],
+  [['L'], 'Change labels'],
+  [['/'], 'Search'],
+  [['⌘', 'K'], 'Command palette'],
+  [['G', 'M'], 'Go to My issues'],
+  [['⌘', 'B'], 'Switch list and board'],
+  [['?'], 'Show these shortcuts'],
+]
+
+const helpDialog = (help: Dialog.Model, h: HtmlBuilder<Message>): Html =>
+  Dialog.dialog(
+    {
+      model: help,
+      toParentMessage: message => Message.GotHelpDialog({ message }),
+      title: 'Keyboard shortcuts',
+      description: 'Available on every issue list.',
+      content: () => [
+        h.ul(
+          [h.Class('flex flex-col gap-2 text-sm')],
+          HELP_SHORTCUTS.map(([keys, label]) =>
+            h.li(
+              [h.Class('flex items-center justify-between gap-4')],
+              [h.span([], [label]), h.span([h.Class('flex gap-1')], keys.map(key => kbd({ children: [key] }, h)))],
+            ),
+          ),
+        ),
+      ],
+    },
+    h,
+  )
+
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
   const visible = visibleIssues(model)
   const groups = groupsOf(visible, model.query.layout)
   const navCounts = counts(model)
   const active = activeHref(model)
-  const hasOverlay = model.picker !== null || model.draft !== null
+  const hasOverlay = model.picker !== null || model.draft !== null || model.help.isOpen
   return {
     title: `${scopeTitle(model.scope)} · Linear`,
     body: h.div(
@@ -1392,6 +1459,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
             }),
           ],
         ),
+        region(h, { id: 'help', deps: [model.help], render: () => h.div([h.Id('help')], [helpDialog(model.help, h)]) }),
         region(h, {
           id: 'new-issue-root',
           deps: [model.draft, model.members],
@@ -1405,14 +1473,20 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
         region(h, { id: 'toast', deps: [model.toast], render: () => toastView(model.toast, h) }),
         region(h, {
           id: 'shortcuts',
-          deps: [hasOverlay],
+          deps: [hasOverlay, model.query.layout],
           render: () =>
             h.div(
               [h.Id('shortcuts')],
               [
                 keyBindings(
                   h,
-                  shortcutBindings(hasOverlay, (shortcut, targetId) => Message.PressedShortcut({ shortcut, targetId })),
+                  shortcutBindings<Message>(
+                    hasOverlay,
+                    (shortcut, targetId) => Message.PressedShortcut({ shortcut, targetId }),
+                    model.query.layout === 'board'
+                      ? undefined
+                      : { within: '#issue-list', moved: elementId => Message.MovedSelection({ elementId }) },
+                  ),
                 ),
               ],
             ),
@@ -1424,23 +1498,24 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
 
 // PROGRAM
 
-const scopeOf = (kind: Scope['_tag'], request: PageRequest): Effect.Effect<Scope, PageNotFound> => {
-  if (kind === 'Mine') return Effect.succeed({ _tag: 'Mine' })
-  if (kind === 'All') return Effect.succeed({ _tag: 'All' })
+const scopeOf = (request: PageRequest): Effect.Effect<Scope, PageNotFound> => {
+  if (request.url.pathname === '/my-issues') return Effect.succeed({ _tag: 'Mine' })
+  if (request.url.pathname === '/issues') return Effect.succeed({ _tag: 'All' })
   return Option.match(decodeTeam((request.params['team'] ?? '').toUpperCase()), {
     onNone: () => Effect.fail(new PageNotFound()),
     onSome: team => Effect.succeed({ _tag: 'Team' as const, team }),
   })
 }
 
-const makeProgram = (name: string, kind: Scope['_tag']): Program<Model, Message, ClientMessage, Flags, Workspace> => ({
-  name,
+/** Serves `/team/:team`, `/my-issues` and `/issues` (see `paths`). */
+export const program: Program<Model, Message, ClientMessage, Flags, Workspace> = {
+  name: 'issues',
   Model,
   ClientMessage,
   flags: request =>
     Effect.gen(function* () {
       const user = yield* requireUser(request)
-      const scope = yield* scopeOf(kind, request)
+      const scope = yield* scopeOf(request)
       const workspace = yield* Workspace
       const me = yield* workspace.memberFor(user)
       const state = yield* workspace.current
@@ -1464,9 +1539,13 @@ const makeProgram = (name: string, kind: Scope['_tag']): Program<Model, Message,
     FocusElement: ({ selector }) => (typeof selector === 'string' ? { focus: selector } : undefined),
   },
   // The session's own state; the workspace comes back from the Subscription.
-  snapshotDeps: model => [model.query, model.selectedId, model.collapsed, model.picker, model.draft, model.toast],
-})
+  onUrlChange: request =>
+    Effect.gen(function* () {
+      yield* requireUser(request)
+      const scope = yield* scopeOf(request)
+      return Message.ChangedUrl({ scope, query: queryFromUrl(request.url) })
+    }),
+  snapshotDeps: model => [model.scope, model.query, model.selectedId, model.collapsed, model.picker, model.draft, model.toast],
+}
 
-export const teamProgram = makeProgram('team', 'Team')
-export const myIssuesProgram = makeProgram('my-issues', 'Mine')
-export const allIssuesProgram = makeProgram('all-issues', 'All')
+export const paths = ['/my-issues', '/issues']

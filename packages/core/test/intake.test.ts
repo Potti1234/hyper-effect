@@ -2,7 +2,7 @@ import { assert, describe, it } from '@effect/vitest'
 
 import * as Intake from '../src/intake'
 
-import { Fate, GoodNetwork, type IntakeImplementation, type Outcome, Scenario, simulate } from './intake-simulation'
+import { type Fate, GoodNetwork, type IntakeImplementation, type Outcome, Scenario, simulate } from './intake-simulation'
 
 /* Experiment 5: the ordered intake against its specification, over generated
    networks that delay, reorder, lose and repeat events. */

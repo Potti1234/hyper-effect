@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import { Effect, Layer } from 'effect'
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from 'effect/http'
 
-import { PageRedirect, type PageRequest, type RequestContext } from '@hyper-effect/core'
+import { PageRedirect, type PageRequest, type RequestContext, secretFromEnvironment } from '@hyper-effect/core'
 
 /* Sign-in for the demo: a name, no password. The name travels in an
    HMAC-signed, HttpOnly cookie. Pages read it in their Flags (and redirect to
@@ -13,7 +13,7 @@ import { PageRedirect, type PageRequest, type RequestContext } from '@hyper-effe
 
 export const USER_COOKIE = 'dispatch-user'
 
-const SECRET = process.env['DISPATCH_SECRET'] ?? 'dispatch-dev-secret, set DISPATCH_SECRET'
+const SECRET = secretFromEnvironment('DISPATCH_SECRET', 'dispatch-dev-secret, set DISPATCH_SECRET')
 const MAX_AGE = 60 * 60 * 12
 const NAME = /^[\p{L}\p{N} .'-]{1,32}$/u
 

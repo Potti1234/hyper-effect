@@ -27,14 +27,24 @@ export const Shortcut = S.Literals([
   'goEngineering',
   'goDesign',
   'toggleLayout',
+  'help',
 ])
 export type Shortcut = typeof Shortcut.Type
 
 /** The binding table. List keys are off while an overlay (picker, dialog) is
  *  open; Escape, Mod+K and Mod+Enter also work while typing. */
+/** Moving the selection in the browser: `J`/`K` and the arrows move
+ *  `data-selected` among the items of `within` at once (a local effect) and
+ *  report the item they moved to; the server only confirms. */
+export type LocalSelection<Message> = Readonly<{
+  within: string
+  moved: (elementId: string) => Message
+}>
+
 export const shortcutBindings = <Message>(
   hasOverlay: boolean,
   pressed: (shortcut: Shortcut, targetId: string) => Message,
+  selection?: LocalSelection<Message>,
 ): ReadonlyArray<KeyBinding<Message>> => {
   const press = (shortcut: Shortcut) => ({ targetId }: KeyContext) => pressed(shortcut, targetId)
   const listKey = (keys: string, shortcut: Shortcut): KeyBinding<Message> => ({
@@ -42,12 +52,23 @@ export const shortcutBindings = <Message>(
     isEnabled: !hasOverlay,
     message: press(shortcut),
   })
+  const moveKey = (keys: string, shortcut: 'down' | 'up'): KeyBinding<Message> =>
+    selection === undefined
+      ? listKey(keys, shortcut)
+      : {
+          keys,
+          isEnabled: !hasOverlay,
+          local: [{ select: { within: selection.within, by: shortcut === 'down' ? 1 : -1 } }],
+          // No item to move to: the server decides, as without the effect.
+          message: ({ targetId, selectedId }) =>
+            selectedId === '' ? pressed(shortcut, targetId) : selection.moved(selectedId),
+        }
   return [
     listKey('C', 'create'),
-    listKey('J', 'down'),
-    listKey('K', 'up'),
-    listKey('ArrowDown', 'down'),
-    listKey('ArrowUp', 'up'),
+    moveKey('J', 'down'),
+    moveKey('K', 'up'),
+    moveKey('ArrowDown', 'down'),
+    moveKey('ArrowUp', 'up'),
     listKey('Enter', 'open'),
     listKey('S', 'status'),
     listKey('P', 'priority'),
@@ -58,6 +79,7 @@ export const shortcutBindings = <Message>(
     { keys: ['G', 'E'], isEnabled: !hasOverlay, message: press('goEngineering') },
     { keys: ['G', 'D'], isEnabled: !hasOverlay, message: press('goDesign') },
     { keys: 'Mod+B', message: press('toggleLayout') },
+    { keys: 'Shift+?', isEnabled: !hasOverlay, message: press('help') },
     { keys: 'Mod+K', whileTyping: 'Allow', message: press('palette') },
     { keys: 'Escape', whileTyping: 'Allow', message: press('escape') },
     { keys: 'Mod+Enter', whileTyping: 'Allow', message: press('submit') },

@@ -23,6 +23,7 @@ if [ "${PG:-}" = 1 ]; then
     "DROP TABLE IF EXISTS products, images, hyper_snapshots; DROP SEQUENCE IF EXISTS product_ids;" >/dev/null
 fi
 rm -rf .hyper-sessions
+. "$root/tools/secrets.sh"
 env PORT=$port NODE_ENV=production HYPER_METRICS=1 ${database:+DATABASE_URL=$database} \
   node --expose-gc --import tsx src/main.ts > "$root/output/admin-load-server.log" 2>&1 &
 server=$!

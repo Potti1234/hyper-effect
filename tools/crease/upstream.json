@@ -1,0 +1,46 @@
+{
+  "repository": "Potti1234/creaseui",
+  "commit": "39bde3c8c0d5af3af5fd369739e5803f7d1cfa22",
+  "differences": {
+    "apps/linear-clone/src/ui/card.ts": {
+      "reason": "id prop so a card can be a region; upstream in https://github.com/Potti1234/creaseui/pull/51, reinstall once merged",
+      "sha256": "f80cfc6b7cf589c8"
+    },
+    "apps/linear-clone/src/ui/dropdown-menu.ts": {
+      "reason": "activateOnHover (upstream in https://github.com/Potti1234/creaseui/pull/51); otherwise older than creaseui: no focus return to the trigger on close, single flip-inline fallback",
+      "sha256": "761c205a36ec6012"
+    },
+    "apps/starter/src/ui/card.ts": {
+      "reason": "id prop so a card can be a region; upstream in https://github.com/Potti1234/creaseui/pull/51, reinstall once merged",
+      "sha256": "f80cfc6b7cf589c8"
+    },
+    "examples/admin/src/ui/alert.ts": {
+      "reason": "older copy: success/warning variants use chart-2/chart-4 instead of the success/warning tokens",
+      "sha256": "f9622b1958bf6705"
+    },
+    "examples/admin/src/ui/card.ts": {
+      "reason": "id prop so a card can be a region; upstream in https://github.com/Potti1234/creaseui/pull/51, reinstall once merged",
+      "sha256": "f80cfc6b7cf589c8"
+    },
+    "examples/admin/src/ui/field.ts": {
+      "reason": "older copy: description link hover is not gated on hover-capable pointers",
+      "sha256": "fc06c3bde653f929"
+    },
+    "examples/admin/src/ui/table.ts": {
+      "reason": "id on the table parts so they can be regions (to propose upstream); older copy without ariaLabel",
+      "sha256": "4ca13299c90859e1"
+    },
+    "examples/dispatch/src/ui/card.ts": {
+      "reason": "id prop so a card can be a region; upstream in https://github.com/Potti1234/creaseui/pull/51, reinstall once merged",
+      "sha256": "f80cfc6b7cf589c8"
+    },
+    "examples/dispatch/src/ui/field.ts": {
+      "reason": "older copy: description link hover is not gated on hover-capable pointers",
+      "sha256": "fc06c3bde653f929"
+    },
+    "examples/dispatch/src/ui/toggle.ts": {
+      "reason": "older copy: no data-size attribute",
+      "sha256": "d9a42d537a25c9dc"
+    }
+  }
+}

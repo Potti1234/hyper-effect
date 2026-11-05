@@ -53,6 +53,25 @@ export const contentSecurityPolicy = (
     .join('; ')
 }
 
+// SECRETS
+
+/** A secret from the environment variable `name`. In development and tests a
+ *  missing one falls back to `development`, which anyone can read in the
+ *  source; with NODE_ENV=production a missing or short (under 32 characters)
+ *  secret is an error, so a deployment never runs on the fallback. */
+export const secretFromEnvironment = (name: string, development: string): string => {
+  const value = process.env[name]
+  if (process.env['NODE_ENV'] !== 'production') {
+    return value === undefined || value === '' ? development : value
+  }
+  if (value === undefined || value.length < 32) {
+    throw new Error(
+      `hyper-effect: set ${name} to a secret of at least 32 characters; a production server does not start on the development fallback.`,
+    )
+  }
+  return value
+}
+
 // SEALED SNAPSHOTS
 
 export type Secret = Redacted.Redacted<string> | string
