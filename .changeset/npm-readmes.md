@@ -1,7 +1,0 @@
----
-'@hyper-effect/core': patch
-'@hyper-effect/island': patch
-'create-hyper-effect': patch
----
-
-Package READMEs show how to install. First stable release, published with npm trusted publishing.
