@@ -1,5 +1,8 @@
 import { afterAll, assert, describe, it } from '@effect/vitest'
-import { Context, Effect, Schema as S } from 'effect'
+import { createHash } from 'node:crypto'
+import { gunzipSync } from 'node:zlib'
+import { Context, Effect, Layer, Schema as S } from 'effect'
+import { HttpRouter, HttpServer } from 'effect/http'
 import { defineMessageUnion } from 'foldkit/message'
 import { KeyValueStore } from 'effect/persistence'
 
@@ -18,6 +21,9 @@ import {
 } from '../src/testing'
 
 import * as Greeter from './fixtures/greeter'
+import { DATASTAR_INTEGRITY, DATASTAR_SOURCE } from '../src/datastar-bundle'
+import * as Hyper from '../src/server'
+import { DATASTAR_PATH } from '../src/server'
 
 /* The hardening on top of experiment 2: authentication, the page's
    Content-Security-Policy, per-client page limits, sealed and expiring
@@ -183,8 +189,10 @@ describe('content security policy', () => {
     const tags = [...html.matchAll(/<(script|style)\b[^>]*>/g)].map(match => match[0])
     assert.lengthOf(tags, 4)
     for (const tag of tags) assert.include(tag, `nonce="${nonce}"`)
-    // The Datastar bundle is pinned by Subresource Integrity.
-    assert.match(html, /datastar\.js" integrity="sha384-[A-Za-z0-9+/=]+" crossorigin="anonymous"/)
+    // The Datastar bundle comes from the app's own origin, pinned by
+    // Subresource Integrity.
+    assert.include(html, `src="${DATASTAR_PATH}" integrity="${DATASTAR_INTEGRITY}"`)
+    assert.notInclude(html, 'cdn.jsdelivr.net')
     assert.strictEqual(headers.get('x-content-type-options'), 'nosniff')
   })
 
@@ -200,6 +208,42 @@ describe('content security policy', () => {
     assert.isNotNull(reporting.headers.get('content-security-policy-report-only'))
     const off = await policyOf({ contentSecurityPolicy: false })
     assert.isNull(off.headers.get('content-security-policy'))
+  })
+
+  it('serves the bundled Datastar from the app origin, matching its integrity hash', async () => {
+    const server = serve({ ...Greeter.program, name: 'datastar' })
+    try {
+      const plain = await get(server.handler, DATASTAR_PATH)
+      assert.strictEqual(plain.status, 200)
+      assert.match(plain.headers.get('content-type') ?? '', /^text\/javascript/)
+      assert.include(plain.headers.get('cache-control') ?? '', 'immutable')
+      const body = await plain.text()
+      assert.strictEqual(body, DATASTAR_SOURCE)
+      assert.strictEqual(
+        `sha384-${createHash('sha384').update(body).digest('base64')}`,
+        DATASTAR_INTEGRITY,
+      )
+      const zipped = await get(server.handler, DATASTAR_PATH, { 'accept-encoding': 'gzip, br' })
+      assert.strictEqual(zipped.headers.get('content-encoding'), 'gzip')
+      assert.strictEqual(gunzipSync(new Uint8Array(await zipped.arrayBuffer())).toString(), DATASTAR_SOURCE)
+    } finally {
+      await server.dispose()
+    }
+  })
+
+  it('serves the bundled Datastar once for several page layers', async () => {
+    const handler = HttpRouter.toWebHandler(
+      Layer.mergeAll(
+        Hyper.layer({ ...Greeter.program, name: 'first' }, { path: '/a' }),
+        Hyper.layer({ ...Greeter.program, name: 'second' }, { path: '/b' }),
+      ).pipe(Layer.provide(HttpServer.layerServices), Layer.provide(Layer.succeedContext(makeStore()))),
+    )
+    try {
+      assert.strictEqual((await get(handler.handler, DATASTAR_PATH)).status, 200)
+      assert.strictEqual((await get(handler.handler, '/b')).status, 200)
+    } finally {
+      await handler.dispose()
+    }
   })
 
   it('leaves out integrity for a custom Datastar URL unless given', async () => {
