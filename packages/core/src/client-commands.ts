@@ -84,6 +84,8 @@ export const foldkitUiCommands: ClientCommands = {
   FocusInput: args => focusOn(part('input')(args)),
   FocusButton: args => focusOn(part('button')(args)),
   FocusItems: args => focusOn(part('items')(args)),
+  // crease dropdown-menu: closing the menu returns focus to its trigger.
+  FocusDropdownMenuTrigger: args => focusOn(part('trigger')(args)),
   ScrollIntoView: args => {
     const selector = item(args)
     return selector === undefined ? undefined : { scrollIntoView: selector }
