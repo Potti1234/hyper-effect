@@ -1,6 +1,6 @@
 {
   "name": "@hyper-effect/island",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.0",
   "private": true,
   "description": "Foldkit islands in hyper-effect pages: the Schema contract, server rendering, the browser custom element and a Vite preset.",
   "license": "MIT",
@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@hyper-effect/core": "*"
+    "@hyper-effect/core": "0.1.0-alpha.0"
   },
   "peerDependencies": {
     "effect": "~4.1.0",
