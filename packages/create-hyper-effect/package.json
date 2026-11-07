@@ -1,6 +1,6 @@
 {
   "name": "create-hyper-effect",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Creates a hyper-effect app: one page with sign-in, live shared state, a form, regions, tests and a browser check.",
   "license": "MIT",

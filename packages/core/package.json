@@ -1,6 +1,6 @@
 {
   "name": "@hyper-effect/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Server-side Foldkit programs on Effect, driven by Datastar: sessions, rendering, event binding, HTTP routes.",
   "license": "MIT",
