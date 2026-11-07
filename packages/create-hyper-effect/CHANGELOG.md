@@ -1,5 +1,11 @@
 # create-hyper-effect
 
+## 0.1.1
+
+### Patch Changes
+
+- [#13](https://github.com/Potti1234/hyper-effect/pull/13) [`2734c31`](https://github.com/Potti1234/hyper-effect/commit/2734c31e922d03a1ea658bafee004165863073fe) Thanks [@devin-ai-integration](https://github.com/apps/devin-ai-integration)! - `OnScroll` posts the final scroll position: its 150 ms throttle now also fires on the trailing edge, so a page that renders what is in view (a server-windowed list) no longer stops short of where scrolling ended.
+
 ## 0.1.0
 
 ### Minor Changes
