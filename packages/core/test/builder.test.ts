@@ -63,6 +63,23 @@ describe('server builder', () => {
     }),
   )
 
+  it.effect('posts the final scroll position, not only the first in each throttle window', () =>
+    Effect.gen(function* () {
+      const { binder } = recordingBinder()
+      const scrolling = viewProgram((_, h) => ({
+        title: 'scroll',
+        body: h.div(
+          [h.Id('list'), h.OnScroll(scrollTop => Message.ChangedName({ name: String(scrollTop) }))],
+          [],
+        ),
+      }))
+      const { html } = yield* renderModel(scrolling, model, binder)
+
+      assert.include(html, 'data-on:scroll__throttle.150ms.trailing=')
+      assert.include(html, 'n: el.scrollTop')
+    }),
+  )
+
   it.effect('registers function-valued handlers for the session', () =>
     Effect.gen(function* () {
       const { binder, handlers } = recordingBinder()

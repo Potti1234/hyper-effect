@@ -321,7 +321,9 @@ const NO_MODIFIERS: KeyboardModifiers = {
 }
 
 const INPUT_DEBOUNCE = '__debounce.200ms'
-const SCROLL_THROTTLE = '__throttle.150ms'
+// Trailing too: the last position of a scroll must reach the server, or a
+// page that renders what is in view (a windowed list) stops short of it.
+const SCROLL_THROTTLE = '__throttle.150ms.trailing'
 
 type ClickOptions = Readonly<{
   defaultAction?: 'Allow' | 'Prevent'
