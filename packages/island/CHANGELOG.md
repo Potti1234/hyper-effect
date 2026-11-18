@@ -1,5 +1,12 @@
 # @hyper-effect/island
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [[`dd81329`](https://github.com/Potti1234/hyper-effect/commit/dd81329ec7b568186378b5c4947bdfbc56febb5d)]:
+  - @hyper-effect/core@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # create-hyper-effect
 
+## 0.1.2
+
+### Patch Changes
+
+- [#15](https://github.com/Potti1234/hyper-effect/pull/15) [`dd81329`](https://github.com/Potti1234/hyper-effect/commit/dd81329ec7b568186378b5c4947bdfbc56febb5d) Thanks [@Potti1234](https://github.com/Potti1234)! - Pin the generated application's Effect browser and shared Node platform peers to the same supported patch release as Effect. Fresh installs no longer select newer platform peers that require an incompatible Effect version.
+
 ## 0.1.1
 
 ### Patch Changes

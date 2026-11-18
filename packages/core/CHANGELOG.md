@@ -1,5 +1,11 @@
 # @hyper-effect/core
 
+## 0.1.2
+
+### Patch Changes
+
+- [#15](https://github.com/Potti1234/hyper-effect/pull/15) [`dd81329`](https://github.com/Potti1234/hyper-effect/commit/dd81329ec7b568186378b5c4947bdfbc56febb5d) Thanks [@Potti1234](https://github.com/Potti1234)! - Own live sessions and snapshot workers in the server layer's scope. Shutdown interrupts session commands, waits for in-flight and final snapshot writes before releasing the store, and retains snapshots for restart instead of leaving detached writers running.
+
 ## 0.1.1
 
 ### Patch Changes
