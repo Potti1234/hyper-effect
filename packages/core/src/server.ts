@@ -735,7 +735,11 @@ const secretList = (
  *  Sessions are snapshotted to the `KeyValueStore` (Schema-encoded Model), so
  *  after a restart, or on another node with a shared store, the next request
  *  for a session restores it instead of starting over. Without a snapshot the
- *  page's Flags are recomputed from its URL. */
+ *  page's Flags are recomputed from its URL.
+ *
+ *  Releasing the layer closes live sessions and completes in-flight and final
+ *  snapshot writes before releasing the store. Snapshots remain available for
+ *  the next server to restore. */
 export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
   program: Program<Model, Message, ClientMessage, Flags, R>,
   options: Options<R> = {},
@@ -746,6 +750,8 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
   return HttpRouter.use(router =>
     Effect.gen(function* () {
       const services = yield* Effect.context<R>()
+      const lifetime = yield* Effect.scope
+      let shuttingDown = false
       const store = KeyValueStore.prefix(
         yield* KeyValueStore.KeyValueStore,
         `hyper/${program.name}/`,
@@ -902,6 +908,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
                   }),
                 ),
                 Effect.catchCause(cause => Effect.logWarning('Snapshot failed', cause)),
+                Effect.uninterruptible,
               )
             }),
           )
@@ -916,6 +923,19 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
           // After any write in progress, so none lands after the removal.
           yield* entry.saving.withPermits(1)(store.remove(id).pipe(Effect.ignore))
         })
+
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          shuttingDown = true
+          for (const [id, entry] of sessions) {
+            if (entry.snapshots !== undefined) yield* Fiber.interrupt(entry.snapshots)
+            yield* entry.session.close
+            yield* saveSnapshot(entry)
+            entry.closed = true
+            sessions.delete(id)
+          }
+        }),
+      )
 
       /** Keeps one visitor within `sessionsPerVisitor` by closing their
        *  oldest session (a forgotten tab) before a new one opens. */
@@ -933,6 +953,10 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         principal: string | undefined,
       ) =>
         Effect.gen(function* () {
+          if (shuttingDown) {
+            yield* session.close
+            return yield* Effect.interrupt
+          }
           const now = Date.now()
           const entry: Entry<Model, Message> = {
             session,
@@ -972,8 +996,13 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
             // on a crash for far fewer store writes under load.
             Stream.debounce('1 second'),
             Stream.runForEach(() => saveSnapshot(entry)),
-            Effect.forkDetach,
+            Effect.forkIn(lifetime),
           )
+          if (shuttingDown) {
+            yield* Fiber.interrupt(entry.snapshots)
+            yield* session.close
+            return yield* Effect.interrupt
+          }
           sessions.set(session.id, entry)
           return entry
         })
