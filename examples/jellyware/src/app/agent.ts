@@ -74,7 +74,14 @@ const piCli = (): string => {
  *  end of stderr. */
 const runNode = (args: ReadonlyArray<string>, options: Readonly<{ cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }>) =>
   Effect.callback<string, string>(resume => {
-    const child = spawn(process.execPath, [...args], { cwd: options.cwd, env: options.env ?? process.env, windowsHide: true })
+    // No stdin: pi in print mode reads piped stdin as more input and would
+    // wait for it to end.
+    const child = spawn(process.execPath, [...args], {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', chunk => (stdout += String(chunk)))
@@ -175,12 +182,14 @@ export const typecheck = (appDirectory: string, workDirectory: string): Check =>
         ),
       )
       yield* runNode([tsc, '--noEmit', '-p', config, '--pretty', 'false'], { cwd: appDirectory, timeoutMs: 10 * 60 * 1000 }).pipe(
-        Effect.mapError(output =>
-          output
-            .split(resolve(snapshot) + '\\').join('')
-            .split(resolve(snapshot).split('\\').join('/') + '/').join('')
-            .slice(0, 6000),
-        ),
+        // tsc prints paths relative to the app; the agent knows its stage.
+        Effect.mapError(output => {
+          const prefixes = [resolve(snapshot), relative(appDirectory, snapshot)].flatMap(path => [
+            `${path}\\`,
+            `${path.split('\\').join('/')}/`,
+          ])
+          return prefixes.reduce((text, prefix) => text.split(prefix).join(''), output).slice(0, 6000)
+        }),
       )
     }),
 })
