@@ -153,7 +153,8 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
         Effect.gen(function* () {
           const previous = running.get(id)
           running.delete(id)
-          generations.delete(folderUrl(join(directory, id)))
+          // The generation stays: a later load must not import a module URL
+          // Node has cached from an earlier version.
           yield* SubscriptionRef.update(statuses, list => list.filter(other => other.id !== id))
           if (previous !== undefined) yield* Scope.close(previous.scope, Exit.void)
         })
@@ -162,7 +163,10 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
         Effect.gen(function* () {
           const folder = join(directory, id)
           const manifestPath = join(folder, 'extension.json')
-          if (!(yield* exists(manifestPath))) return yield* unload(id)
+          if (!(yield* exists(manifestPath))) {
+            if (running.has(id)) yield* Effect.logInfo(`jellyware: ${id} unloaded`)
+            return yield* unload(id)
+          }
 
           const text = yield* Effect.tryPromise({
             try: () => readFile(manifestPath, 'utf8'),
@@ -203,12 +207,14 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           const settled = yield* Effect.exit(mounted.settled)
           if (Exit.isFailure(settled)) {
             yield* Scope.close(scope, Exit.void)
+            yield* Effect.logWarning(`jellyware: ${id} generation ${generation} failed to build`, settled.cause)
             return yield* setStatus({ ...base, state: 'failed', running: runningNow(), error: describe(settled.cause) })
           }
 
           const previous = running.get(id)
           running.set(id, { generation, scope })
           if (previous !== undefined) yield* Scope.close(previous.scope, Exit.void)
+          yield* Effect.logInfo(`jellyware: ${id} generation ${generation} is running`)
 
           const report = (state: Graft.MountState) =>
             state._tag === 'Unmounted' || state._tag === 'Loading'
@@ -231,7 +237,8 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           yield* mounted.state.pipe(Stream.runForEach(report), Effect.forkIn(scope))
         }).pipe(
           Effect.catchTag('LoadError', error =>
-            SubscriptionRef.update(statuses, list => {
+            Effect.logWarning(`jellyware: ${id}: ${error.message}`).pipe(
+              Effect.andThen(SubscriptionRef.update(statuses, list => {
               const known = list.find(other => other.id === id)
               const status: ExtensionStatus = {
                 id,
@@ -242,7 +249,8 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
                 error: error.message,
               }
               return [...list.filter(other => other.id !== id), status].sort((a, b) => a.id.localeCompare(b.id))
-            }),
+            })),
+            ),
           ),
           lock.withPermits(1),
         )
