@@ -4,14 +4,14 @@ import type { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { defineMessageUnion } from 'foldkit/message'
 
 import { type Program, memoizeLast, region } from '@hyper-effect/core'
-import { Changes, Contributions, ExtensionStatus, Extensions, Run } from '@hyper-effect/jellyware'
+import { Changes, type Contributions, ExtensionStatus, Extensions, Run } from '@hyper-effect/jellyware'
 
 import { renderTextarea } from '@/lib/textarea'
 import { cn } from '@/lib/utils'
 import { button } from '@/ui/button'
 
 import { Shell, frame, loadShell, shellChanges } from '../extensions'
-import { Workspace } from '../store'
+import { type Workspace } from '../store'
 
 /* The workshop: change the app by prompting an agent, follow each run, undo
    it, and see which extensions are loaded. Every signed-in member may start
