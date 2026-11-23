@@ -20,7 +20,8 @@ export type SidebarProps<Msg> = Readonly<{
   /** The href of the page shown, to highlight its entry. */
   active: string
   counts: NavCounts
-  /** Entries added by extensions, under "Extensions". */
+  /** Entries added by extensions, under "Extensions" (with the link to
+   *  the workshop, where extensions are changed). */
   extensions: ReadonlyArray<NavEntry>
   /** New issue: a Message on pages that have the dialog, a link elsewhere. */
   onCreate: Readonly<{ message: Msg } | { href: string }>
@@ -168,19 +169,21 @@ export const sidebar = <Msg>(props: SidebarProps<Msg>, h: HtmlBuilder<Msg>): Htm
               isActive: props.active === view.href,
             }),
           ),
-          ...(props.extensions.length === 0
-            ? []
-            : [
-                sectionHeading(h, 'Extensions'),
-                ...props.extensions.map(entry =>
-                  navLink(h, {
-                    href: entry.href,
-                    label: entry.label,
-                    icon: Icon.icon(entry.icon, { class: 'size-4' }, h),
-                    isActive: props.active === entry.href,
-                  }),
-                ),
-              ]),
+          sectionHeading(h, 'Extensions'),
+          ...props.extensions.map(entry =>
+            navLink(h, {
+              href: entry.href,
+              label: entry.label,
+              icon: Icon.icon(entry.icon, { class: 'size-4' }, h),
+              isActive: props.active === entry.href,
+            }),
+          ),
+          navLink(h, {
+            href: '/extensions',
+            label: 'Manage extensions',
+            icon: Icon.icon('blocks', { class: 'size-4' }, h),
+            isActive: props.active === '/extensions',
+          }),
         ],
       ),
       h.div(

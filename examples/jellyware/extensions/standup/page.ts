@@ -6,10 +6,10 @@ import { defineMessageUnion } from 'foldkit/message'
 import { type Program, memoizeLast, region } from '@hyper-effect/core'
 import type { Contributions } from '@hyper-effect/jellyware'
 
-import { Issue, Member, statusLabel } from '../../src/app/domain.ts'
-import { Shell, frame, loadShell, shellChanges } from '../../src/app/extensions.ts'
-import { Workspace, type WorkspaceState } from '../../src/app/store.ts'
-import { avatar, statusIcon } from '../../src/app/view/icons.ts'
+import { Issue, Member, statusLabel } from '#app/domain'
+import { Shell, frame, loadShell, shellChanges } from '#app/extensions'
+import { Workspace, type WorkspaceState } from '#app/store'
+import { avatar, statusIcon } from '#app/view/icons'
 
 /* Stand-up: per member, the issues in progress and, if shown, in review.
    Live: a change anyone makes reaches every open copy of this page. An

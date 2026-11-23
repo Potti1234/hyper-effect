@@ -3,7 +3,7 @@ import { Effect, Layer } from 'effect'
 import { PageHost } from '@hyper-effect/core'
 import { Contributions } from '@hyper-effect/jellyware'
 
-import { extension, pageOptions } from '../../src/app/extensions.ts'
+import { extension, pageOptions } from '#app/extensions'
 
 import * as Standup from './page.ts'
 

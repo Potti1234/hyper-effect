@@ -11,6 +11,10 @@ import { chromium } from 'playwright'
    open, and the extension unloaded and loaded again while another person's
    page shows the sidebar.
 
+   The last part changes the app by prompt on /extensions. It needs the
+   server started with JELLYWARE_AGENT=script (a scripted agent instead of
+   pi); without it, that part is skipped.
+
    It edits extensions/standup/ and puts the files back when it ends.
 
    Usage: node scripts/check-extensions.mjs   (URL=… for another server) */
@@ -20,6 +24,9 @@ const TIMEOUT = Number(process.env.CHECK_TIMEOUT ?? 10000)
 const folder = fileURLToPath(new URL('../extensions/standup', import.meta.url))
 const pageFile = join(folder, 'page.ts')
 const original = readFileSync(pageFile, 'utf8')
+const entryFile = join(folder, 'extension.ts')
+const originalEntry = readFileSync(entryFile, 'utf8')
+const RUN_TIMEOUT = 5 * 60 * 1000
 const parked = join(tmpdir(), `jellyware-standup-${Date.now()}`)
 
 const results = []
@@ -100,6 +107,38 @@ try {
 
   // A swapped page breaks its open stream on purpose, so Datastar reconnects:
   // Chrome logs that one as a failed resource.
+  // CHANGES BY PROMPT
+  if (process.env.JELLYWARE_AGENT === 'script') {
+    await ada.page.goto(`${base}/extensions`)
+    await ada.page.waitForSelector('#workshop-extensions')
+    check('the workshop lists the loaded extension', await until(ada.page, () => document.querySelector('#extension-standup')?.dataset.state === 'active'))
+    const prompt = async text => {
+      const before = await ada.page.locator('#workshop-runs article').count()
+      await ada.page.fill('#workshop-prompt', text)
+      await ada.page.click('#workshop-submit')
+      await ada.page.waitForFunction(count => document.querySelectorAll('#workshop-runs article').length > count, before, { timeout: TIMEOUT })
+      const id = await ada.page.evaluate(() => document.querySelector('#workshop-runs article').id)
+      await ada.page.waitForFunction(
+        selector => ['installed', 'failed', 'unchanged'].includes(document.querySelector(selector)?.dataset.state),
+        `#${id}`,
+        { timeout: RUN_TIMEOUT },
+      )
+      return { id, state: await ada.page.getAttribute(`#${id}`, 'data-state'), text: await ada.page.textContent(`#${id}`) }
+    }
+    const daily = await prompt("replace standup/extension.ts :: label: 'Stand-up' => label: 'Daily'")
+    check('a prompt goes live', daily.state === 'installed', daily.state)
+    check('and changes another person’s open page', await until(grace.page, () => [...document.querySelectorAll('#sidebar a')].some(link => link.textContent === 'Daily')))
+    await ada.page.click(`#undo-${daily.id.slice(4)}`)
+    check('undo takes it back', await until(ada.page, selector => document.querySelector(selector)?.dataset.state === 'undone', `#${daily.id}`))
+    check('on the other person’s page too', await until(grace.page, () => [...document.querySelectorAll('#sidebar a')].some(link => link.textContent === 'Stand-up')))
+    const liveBefore = readFileSync(pageFile, 'utf8')
+    const broken = await prompt("replace standup/page.ts :: export const PATH = '/standup' => export const PATH: number = '/standup'")
+    check('a change that does not typecheck fails', broken.state === 'failed' && broken.text.includes('TS2322'), broken.state)
+    check('and leaves the live extension alone', readFileSync(pageFile, 'utf8') === liveBefore)
+  } else {
+    console.log('SKIP changes by prompt (start the server with JELLYWARE_AGENT=script)')
+  }
+
   const errors = people.flatMap(person => person.errors).filter(error => !error.includes('/_hyper/standup/'))
   check('no errors in the browser console', errors.length === 0, errors.slice(0, 3).join(' | '))
 } finally {
@@ -110,6 +149,7 @@ try {
     // Not parked.
   }
   writeFileSync(pageFile, original)
+  if (readFileSync(entryFile, 'utf8') !== originalEntry) writeFileSync(entryFile, originalEntry)
   rmSync(parked, { recursive: true, force: true })
 }
 

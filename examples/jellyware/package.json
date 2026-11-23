@@ -4,6 +4,9 @@
   "private": true,
   "description": "Jellyware: the Linear clone with extensions that are loaded, swapped and unloaded while it runs.",
   "type": "module",
+  "imports": {
+    "#app/*": "./src/app/*.ts"
+  },
   "scripts": {
     "dev": "npm run build && tsx watch --exclude \"extensions/**\" src/main.ts",
     "start": "npm run build && node --import tsx src/main.ts",
