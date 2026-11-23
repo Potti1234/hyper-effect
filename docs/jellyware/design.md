@@ -130,17 +130,25 @@ What in-process code can still do: block the event loop, call `process.exit`, re
 
 Everything else can live outside core ([placement.md](placement.md)).
 
+## Verified in the example (2026-11-23)
+
+`examples/jellyware` runs the Stand-up extension (three files) under `node --import tsx`, Node 26. `scripts/check-extensions.mjs` passes 12/12 in Chromium, and the Linear clone's own check passes 53/53 with the extension loaded.
+
+- **`registerHooks` together with `tsx`.** The resolve hook composes with tsx's loader: a change to `page.ts`, which only the entry imports, is served within a second.
+- **Session restore across a swap.** An open Stand-up page shows the new version without a page load, and keeps its state (an unchecked checkbox) through the snapshot. This needed a change in core: closing a page did not end its open streams, and Datastar does not reconnect a stream that ends normally (`retry: 'auto'`). A closing page now fails its streams (`PageClosed` in `server.ts`); Datastar reconnects as after a restart. Chrome logs the broken stream as `ERR_INCOMPLETE_CHUNKED_ENCODING`.
+- **Failures.** A version that throws on import keeps the previous version serving. Removing the folder removes the entry from another person's open page; putting it back adds it again.
+- **Generations are never reused.** Unloading an extension and loading it again first reused generation 1, a module URL Node had cached from the first version; the loader now keeps counting.
+
 ## Unverified
 
-- **`registerHooks` together with `tsx`.** `tsx` installs its own loader hooks; whether a synchronous resolve hook from `registerHooks` composes with them, and in which order, has not been tried.
-- **Session restore across a swap.** That a stream reconnects and restores under the new program after the page host closes the old one needs a browser check.
 - **Memory per module generation** for a typical extension.
 - **Datastar and a new stylesheet** in a page that is already open.
+- **Events during a swap.** While both versions are mounted, an event goes to the new version, which restores the session; the old version's final snapshot can then overwrite the newer one. The window is the time between mounting the new version and closing the old one.
 
 ## Order of work
 
 1. Core: `pageRoutes`, the page host, HTTP tests that mount, unmount, mount again and swap a page (done).
-2. A hand-written extension in an example app: loader, Graft mount, registry, a page and a nav entry; swap it with a browser open.
+2. A hand-written extension in an example app: loader, Graft mount, registry, a page and a nav entry; swap it with a browser open (done: `packages/jellyware`, `examples/jellyware`).
 3. The staged pipeline and change sets.
 4. Stylesheets, settings through `Graft.publish`, a page showing `Graft.mounts`.
 5. Slots and commands.
