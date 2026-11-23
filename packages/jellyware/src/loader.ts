@@ -1,5 +1,5 @@
 import { watch } from 'node:fs'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { registerHooks } from 'node:module'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -19,6 +19,7 @@ import {
   SubscriptionRef,
 } from 'effect'
 
+import { hashFolder, listFolders } from './files.ts'
 import * as Graft from './graft.ts'
 
 /* Loads the extensions in a folder, swaps each one when its files change,
@@ -73,7 +74,8 @@ export class Extensions extends Context.Service<
     readonly changes: Stream.Stream<ReadonlyArray<ExtensionStatus>>
     readonly current: Effect.Effect<ReadonlyArray<ExtensionStatus>>
     /** Loads the extension in folder `id` again: mounts its current files,
-     *  or unloads it when its folder or manifest is gone. */
+     *  or unloads it when its folder or manifest is gone. Files unchanged
+     *  since the last attempt are not loaded again. */
     readonly reload: (id: string) => Effect.Effect<void>
   }
 >()('@hyper-effect/jellyware/Extensions') {}
@@ -135,6 +137,10 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
       const lifetime = yield* Effect.scope
       const statuses = yield* SubscriptionRef.make<ReadonlyArray<ExtensionStatus>>([])
       const running = new Map<string, Readonly<{ generation: number; scope: Scope.Closeable }>>()
+      /** The folder hash of each extension's last load attempt: a load of
+       *  unchanged files (a watcher event for files the pipeline already
+       *  loaded, a repeated reload) does nothing. */
+      const attempted = new Map<string, string>()
       const lock = yield* Semaphore.make(1)
       // Only the graph: the layer's whole context would also carry its Scope.
       const graph = yield* Graft.Graph
@@ -153,6 +159,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
         Effect.gen(function* () {
           const previous = running.get(id)
           running.delete(id)
+          attempted.delete(id)
           // The generation stays: a later load must not import a module URL
           // Node has cached from an earlier version.
           yield* SubscriptionRef.update(statuses, list => list.filter(other => other.id !== id))
@@ -177,6 +184,9 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           )
           const base = { id, name: manifest.name, version: manifest.version }
           const runningNow = () => running.get(id)?.generation ?? null
+          const hash = (yield* Effect.promise(() => hashFolder(folder))) ?? ''
+          if (attempted.get(id) === hash) return
+          attempted.set(id, hash)
           if (manifest.id !== id) {
             return yield* setStatus({
               ...base,
@@ -255,13 +265,8 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           lock.withPermits(1),
         )
 
-      const folders = yield* Effect.promise(() =>
-        readdir(directory, { withFileTypes: true }).then(
-          entries => entries.filter(entry => entry.isDirectory()).map(entry => entry.name),
-          () => [],
-        ),
-      )
-      for (const id of folders.sort()) yield* load(id)
+      const folders = yield* Effect.promise(() => listFolders(directory))
+      for (const id of folders) yield* load(id)
 
       if (options.watch === true) {
         const changed = yield* Queue.unbounded<string>()

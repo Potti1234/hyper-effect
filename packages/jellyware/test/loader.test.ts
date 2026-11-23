@@ -15,7 +15,8 @@ import { Extensions, layer } from '../src/loader'
 
 const directory = join(import.meta.dirname, '.tmp', `run-${Date.now()}`)
 mkdirSync(directory, { recursive: true })
-afterAll(() => rmSync(join(import.meta.dirname, '.tmp'), { recursive: true, force: true }))
+// Only this file's folder: test files run in parallel.
+afterAll(() => rmSync(directory, { recursive: true, force: true }))
 
 const contributionsModule = join(import.meta.dirname, '..', 'src', 'contributions.ts').replaceAll('\\', '/')
 
