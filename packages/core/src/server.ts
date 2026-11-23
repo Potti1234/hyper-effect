@@ -1,6 +1,8 @@
 import { gzipSync } from 'node:zlib'
 import {
   ByteSize,
+  Data,
+  Deferred,
   Duration,
   Effect,
   Fiber,
@@ -753,6 +755,13 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
   )
 }
 
+/** Ends a page's open streams when the page closes while the server keeps
+ *  running (a page host unmounting it). A failed stream breaks the
+ *  connection, and Datastar reconnects as after a restart: to the page's
+ *  next version, which restores the session from its snapshot. Datastar does
+ *  not reconnect a stream that ends normally. */
+class PageClosed extends Data.TaggedError('PageClosed')<{}> {}
+
 /** A route of a page, as `pageRoutes` returns it. */
 export type PageRoute = HttpRouter.Route<never, HttpRouter.Provided>
 
@@ -816,6 +825,7 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
       const services = yield* Effect.context<R>()
       const lifetime = yield* Effect.scope
       let shuttingDown = false
+      const stopped = yield* Deferred.make<void>()
       const store = KeyValueStore.prefix(
         yield* KeyValueStore.KeyValueStore,
         `hyper/${program.name}/`,
@@ -991,6 +1001,7 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           shuttingDown = true
+          yield* Deferred.succeed(stopped, undefined)
           for (const [id, entry] of sessions) {
             if (entry.snapshots !== undefined) yield* Fiber.interrupt(entry.snapshots)
             yield* entry.session.close
@@ -1416,7 +1427,10 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
           )
           const encoding =
             options.compression === true ? Compression.negotiate(request.headers['accept-encoding']) : undefined
-          const body = Stream.merge(patches, heartbeats).pipe(
+          const closed = Stream.fromEffect(Deferred.await(stopped)).pipe(
+            Stream.flatMap(() => Stream.fail(new PageClosed())),
+          )
+          const body = Stream.merge(Stream.merge(patches, heartbeats), closed).pipe(
             Stream.encodeText,
             stream => (encoding === undefined ? stream : stream.pipe(Compression.compress(Metrics.recordWire))),
             Stream.ensuring(

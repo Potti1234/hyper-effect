@@ -84,8 +84,29 @@ describe('page host', () => {
   it('restores an open session under the newer page after the older one closes', async () => {
     const closeOld = await mount({ ...titled('first version'), name: 'restore' }, '/restore')
     const page = await openPage(server.handler, '/restore')
+    const before = await openStream(server.handler, page)
+    const reader = before.body!.getReader()
+    const decoder = new TextDecoder()
+    let first = ''
+    while (!first.includes('first version')) {
+      const { value, done } = await reader.read()
+      if (done) break
+      first += decoder.decode(value, { stream: true })
+    }
+    assert.include(first, 'first version')
     const closeNew = await mount({ ...titled('second version'), name: 'restore' }, '/restore')
     await closeOld()
+    // The open stream breaks, so Datastar reconnects (it does not reopen a
+    // stream that ends normally).
+    const ending = async (): Promise<string> => {
+      try {
+        while (!(await reader.read()).done);
+        return 'ended'
+      } catch {
+        return 'broke'
+      }
+    }
+    assert.strictEqual(await ending(), 'broke')
     // The browser reconnects its stream; the new page restores the session.
     const stream = await openStream(server.handler, page)
     assert.strictEqual(stream.status, 200)
