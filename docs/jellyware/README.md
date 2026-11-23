@@ -1,6 +1,6 @@
 # Jellyware for hyper-effect
 
-Research and design notes for an extension system that lets users change a running hyper-effect app by prompting an agent. Status as of 2026-11-23: the page host is in core, the loader in `packages/jellyware`, and `examples/jellyware` runs an extension that is swapped while pages are open ([design.md](design.md#verified-in-the-example-2026-11-23)). No agent pipeline yet.
+Research and design notes for an extension system that lets users change a running hyper-effect app by prompting an agent. Status as of 2026-11-23: the page host is in core, the loader in `packages/jellyware`, and `examples/jellyware` runs an extension that is swapped while pages are open ([design.md](design.md#verified-in-the-example-2026-11-23)). Prompts on its `/extensions` page go through the change pipeline to pi and can be undone ([design.md](design.md#what-is-built-2026-11-23)).
 
 ## What jellyware means here
 

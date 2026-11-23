@@ -8,6 +8,7 @@ Three places for the extension system (in `@hyper-effect/core`, as a package in 
 - The first app is `examples/jellyware`, based on `apps/linear-clone`, with a sidebar entry and page contributed by an extension. The prompting UI follows later.
 - The work stays on the local branch `jellyware`: not pushed, no changesets, not released.
 - The agent is pi, signed in with the Codex `auth.json`.
+- The pipeline turned out not to depend on the agent, so it is in `packages/jellyware` (`Changes`); only the pi agent and the typecheck are in the example app.
 
 ## What has to change in core in any case
 

@@ -97,6 +97,8 @@ Tailwind runs once when an app starts (`"css": "tailwindcss -i src/styles.css -o
 - **Build:** publishing an extension runs Tailwind again with `extensions/**` as a source and writes the result under a content-hashed name.
 - **Reload:** open pages need the new stylesheet. The current client actions (`packages/core/src/client-commands.ts`) are focus, scroll, URL changes, click and dialogs; none replaces a stylesheet. Core needs either a new client action or a stylesheet link that the page host renders and morphs.
 
+Built (2026-11-23): core's `StylesheetChanges` is a `Context.Reference` holding a stream of stylesheet URLs, empty by default. Every open page's stream forwards it as a Datastar signal; the client loads the new stylesheets and removes the old ones once they have loaded, so the page is never without styles. In the example, `src/app/styles.ts` watches `extensions/`, runs Tailwind again (`src/styles.css` now lists `../extensions` as a source; before, classes used only in an extension had no CSS), and publishes `/styles.css?v=<hash>`; `/styles.css` is served with `no-cache`, so pages loaded later get the current file. The check: a new version that adds `text-lime-600`, a class nothing else uses, recolours the open Stand-up page without a page load.
+
 ## 6. The agent pipeline
 
 Taken from Powermove ([prior-art.md](prior-art.md#agent-pipeline)), with hyper-effect's existing checks as validation:
@@ -109,6 +111,29 @@ Taken from Powermove ([prior-art.md](prior-art.md#agent-pipeline)), with hyper-e
 6. **Record** the run as a change set with the hashes before and after. Undoing it restores `before/` only while the live tree still has the hash the run produced.
 
 Failures go back to the agent with the report, a limited number of times. The hyper-effect skill is the authoring guide; a generated skill lists the installed extensions, their commands and their slots, as bb's `plugin-commands-skill.ts` does.
+
+### What is built (2026-11-23)
+
+A first run with pi: the prompt "Add a Triage extension: a sidebar entry 'Triage' and a page at /triage that lists the issues nobody is assigned to and whose status is backlog or todo, newest first. Each row links to the issue and has a button 'Take it' that assigns the issue to me. The list updates live." went live after two attempts in about two minutes (the first failed the typecheck; pi fixed it from the errors). In a browser, the page listed eight issues, and "Take it" assigned one and removed it from the list.
+
+Two problems found on the way: pi waited for input when its stdin was a pipe (now `stdin: 'ignore'`), and runs started before a restart showed as the newest when a check looked for "the newest run" (checks now wait for a new one).
+
+The pipeline is `Changes` in `packages/jellyware/src/changes.ts`; it knows nothing about the agent. The app gives it an `Agent` and its checks (`examples/jellyware/src/app/agent.ts`), and `/extensions` in the example is the page that starts runs and undoes them.
+
+| Step | Built as |
+|---|---|
+| Stage | `.jellyware/runs/<id>/stage/`, a copy of `extensions/`; the agent's working directory |
+| Agent | pi in print mode, file tools only (read, edit, write, grep, find, ls; no shell), model `gpt-6.1-sol` through the `openai-codex` provider; a retry continues the same pi session with what failed |
+| Guard | The app's `src/` is hashed before and after the agent works; a change there fails the run |
+| Snapshot | `snapshot/`, copied from the stage after each attempt; checks and install use it |
+| Checks | Manifest Schema and entry file, a scan for credentials (API keys, private keys, tokens), and an incremental `tsc` of the changed extensions against the app (about 20 seconds once warm) |
+| Install | Refused if a live extension changed since staging; `before/` gets copies of the live folders; the run is saved as `installing` (the journal); live folders are made equal to the snapshot by writing files in place; each changed extension is reloaded; one that fails to build is put back and its error goes to the agent |
+| Record | `run.json` with the folder hash before and after per extension; undo restores `before/` only while the live hash equals the run's |
+| Recovery | At start, a run left `installing` is put back; one left `working` or `checking` is marked failed |
+
+Not built from the list above: a trial mount in a separate Graft graph (the live load with its put-back does that job), Story and Scene tests of the extension, and comparing the agent's declared changes with the hash difference.
+
+Credentials: pi and the Codex CLI sign in to the same ChatGPT account, and refreshing an OAuth token rotates it. pi's own stored Codex credential had stopped refreshing for that reason (`pi auth check` reported `invalid`). The agent therefore copies the Codex CLI's current access token into the app's own pi folder (`.jellyware/pi-agent`, ignored by git) before each attempt, without a refresh token, and starts only while the token has an hour left.
 
 ## 7. Data and migrations
 
@@ -142,13 +167,12 @@ Everything else can live outside core ([placement.md](placement.md)).
 ## Unverified
 
 - **Memory per module generation** for a typical extension.
-- **Datastar and a new stylesheet** in a page that is already open.
 - **Events during a swap.** While both versions are mounted, an event goes to the new version, which restores the session; the old version's final snapshot can then overwrite the newer one. The window is the time between mounting the new version and closing the old one.
 
 ## Order of work
 
 1. Core: `pageRoutes`, the page host, HTTP tests that mount, unmount, mount again and swap a page (done).
 2. A hand-written extension in an example app: loader, Graft mount, registry, a page and a nav entry; swap it with a browser open (done: `packages/jellyware`, `examples/jellyware`).
-3. The staged pipeline and change sets.
-4. Stylesheets, settings through `Graft.publish`, a page showing `Graft.mounts`.
+3. The staged pipeline and change sets (done: `Changes`, the pi agent, `/extensions`).
+4. Stylesheets (done: `StylesheetChanges`, the example's Tailwind rebuild), settings through `Graft.publish`, a page showing what is mounted (the workshop lists the loader's statuses, which follow Graft's mount states).
 5. Slots and commands.
