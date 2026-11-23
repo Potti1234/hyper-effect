@@ -1,6 +1,7 @@
 import { gzipSync } from 'node:zlib'
 import {
   ByteSize,
+  Context,
   Data,
   Deferred,
   Duration,
@@ -184,6 +185,9 @@ const CONTROL_ID = 'hyper-control'
 /** Signal carrying browser effects of forwarded Commands. */
 const ACTIONS_SIGNAL = '_hc'
 const RUN_ACTIONS = 'hyperRunActions'
+/** The stylesheet URLs of `StylesheetChanges`, as JSON. */
+const STYLES_SIGNAL = '_hs'
+const SET_STYLES = 'hyperStyles'
 /** Signal carrying the intake position of each render (local effects). */
 const APPLIED_SIGNAL = '_ha'
 const APPLIED = 'hyperApplied'
@@ -508,6 +512,28 @@ const CLIENT_SCRIPT = `(() => {
   window.addEventListener('pageshow', evt => { if (evt.persisted) location.reload() })
   const sameOrigin = url => { try { return new URL(url, location.href).origin === location.origin } catch { return false } }
   let lastActions = ''
+  // StylesheetChanges: load the new stylesheets, then take the old ones out,
+  // so the page never shows without styles.
+  let lastStyles = ''
+  window.${SET_STYLES} = json => {
+    if (!json || json === lastStyles) return
+    lastStyles = json
+    const hrefs = JSON.parse(json)
+    const old = [...document.querySelectorAll('link[data-hyper-style]')]
+    if (hrefs.length === old.length && hrefs.every((href, i) => old[i].getAttribute('href') === href)) return
+    let waiting = hrefs.length
+    const settle = () => { waiting -= 1; if (waiting <= 0) for (const link of old) link.parentNode?.removeChild(link) }
+    if (waiting === 0) settle()
+    for (const href of hrefs) {
+      const link = document.createElement('link')
+      link.rel = 'stylesheet'
+      link.href = href
+      link.setAttribute('data-hyper-style', '')
+      link.addEventListener('load', settle)
+      link.addEventListener('error', settle)
+      document.head.appendChild(link)
+    }
+  }
   window.${RUN_ACTIONS} = (json, endpoint) => {
     if (!json || json === lastActions) return
     lastActions = json
@@ -762,6 +788,16 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
  *  not reconnect a stream that ends normally. */
 class PageClosed extends Data.TaggedError('PageClosed')<{}> {}
 
+/** The stylesheets of open pages, when they change while the server runs
+ *  (an app that rebuilds its CSS for code loaded at run time). When it
+ *  emits, every open page loads these stylesheets in place of the ones it
+ *  has, those of `Options.stylesheets` included. Provide it where pages are
+ *  built; by default nothing changes. */
+export const StylesheetChanges = Context.Reference<Stream.Stream<ReadonlyArray<string>>>(
+  '@hyper-effect/core/StylesheetChanges',
+  { defaultValue: () => Stream.empty },
+)
+
 /** A route of a page, as `pageRoutes` returns it. */
 export type PageRoute = HttpRouter.Route<never, HttpRouter.Provided>
 
@@ -826,6 +862,7 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
       const lifetime = yield* Effect.scope
       let shuttingDown = false
       const stopped = yield* Deferred.make<void>()
+      const stylesheetChanges = yield* StylesheetChanges
       const store = KeyValueStore.prefix(
         yield* KeyValueStore.KeyValueStore,
         `hyper/${program.name}/`,
@@ -1205,7 +1242,7 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
           '<meta name="viewport" content="width=device-width, initial-scale=1">',
           titleTag(rendered.title),
           ...(options.stylesheets ?? []).map(
-            href => `<link rel="stylesheet" href="${escapeAttribute(href)}">`,
+            href => `<link rel="stylesheet" href="${escapeAttribute(href)}" data-hyper-style>`,
           ),
           `<style nonce="${nonce}">${CLIENT_STYLE}</style>`,
           `<script nonce="${nonce}">${CLIENT_SCRIPT}</script>`,
@@ -1222,7 +1259,7 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
           ),
           '</head>',
           '<body>',
-          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')" data-hyper-endpoint="${endpoint(id)}"${
+          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-signals:${STYLES_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL}); window.${SET_STYLES}?.($${STYLES_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')" data-hyper-endpoint="${endpoint(id)}"${
             program.onUrlChange === undefined ? '' : ` data-hyper-paths="${escapeAttribute(JSON.stringify(patterns))}"`
           }></div>`,
           rendered.html,
@@ -1425,12 +1462,15 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
             Stream.drop(1),
             Stream.map(() => heartbeat),
           )
+          const styles = stylesheetChanges.pipe(
+            Stream.map(hrefs => patchSignals({ [STYLES_SIGNAL]: JSON.stringify(hrefs) })),
+          )
           const encoding =
             options.compression === true ? Compression.negotiate(request.headers['accept-encoding']) : undefined
           const closed = Stream.fromEffect(Deferred.await(stopped)).pipe(
             Stream.flatMap(() => Stream.fail(new PageClosed())),
           )
-          const body = Stream.merge(Stream.merge(patches, heartbeats), closed).pipe(
+          const body = Stream.mergeAll([patches, heartbeats, styles, closed], { concurrency: 'unbounded' }).pipe(
             Stream.encodeText,
             stream => (encoding === undefined ? stream : stream.pipe(Compression.compress(Metrics.recordWire))),
             Stream.ensuring(
