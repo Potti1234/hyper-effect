@@ -96,6 +96,27 @@ try {
   await ada.page.click('#standup-show-review')
   check('the new version takes events', await until(ada.page, () => document.querySelector('#standup-show-review').checked))
 
+  // A CLASS NO OTHER CODE USES: the CSS is built again and the open page loads it
+  const colorBefore = await ada.page.evaluate(() => getComputedStyle(document.querySelector('#standup-header h1')).color)
+  writeFileSync(
+    pageFile,
+    original
+      .replace("['Stand-up']", "['Stand-up, version 3']")
+      .replace("h.h1([h.Class('flex-1 text-[13px] font-semibold')]", "h.h1([h.Class('flex-1 text-[13px] font-semibold text-lime-600')]"),
+  )
+  check(
+    'a new Tailwind class reaches the open page',
+    await until(
+      ada.page,
+      before => {
+        const h1 = document.querySelector('#standup-header h1')
+        return h1?.textContent === 'Stand-up, version 3' && getComputedStyle(h1).color !== before
+      },
+      colorBefore,
+    ),
+  )
+  check('still without reloading the page', await ada.page.evaluate(() => window.__sameDocument === true))
+
   // UNLOADING AND LOADING AGAIN
   await ada.page.goto(`${base}/team/ENG`)
   renameSync(folder, parked)

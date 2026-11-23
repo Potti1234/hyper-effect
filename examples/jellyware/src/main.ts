@@ -14,6 +14,7 @@ import * as Extensions from '@/app/extensions'
 import * as IssuePage from '@/app/issue/page'
 import * as Issues from '@/app/issues/page'
 import * as Store from '@/app/store'
+import * as Styles from '@/app/styles'
 import * as Workshop from '@/app/workshop/page'
 
 /* The server: the app's own pages, plain routes for sign-in and static
@@ -36,13 +37,19 @@ const publicFile = (path: string) => fileURLToPath(new URL(`../public/${path}`, 
 
 const page = Extensions.pageOptions
 
-/** Where extensions run: the page host and the sidebar entries, shared by
- *  the app's pages and the extensions (one instance of each per server). */
-const Host = Layer.mergeAll(Hyper.pageHost, Jellyware.Contributions.layer)
-
 const appDirectory = fileURLToPath(new URL('..', import.meta.url))
 const extensionsDirectory = join(appDirectory, 'extensions')
 const workDirectory = join(appDirectory, '.jellyware')
+
+/** Where extensions run: the page host, the sidebar entries and the
+ *  stylesheet, shared by the app's pages and the extensions (one instance
+ *  of each per server). */
+const Host = Layer.mergeAll(
+  Hyper.pageHost,
+  Jellyware.Contributions.layer,
+  // Rebuilds the CSS for classes extensions add, and moves open pages to it.
+  Styles.layer({ appDirectory, extensionsDirectory }),
+)
 
 const Loaded = Jellyware.layer({
   directory: extensionsDirectory,
@@ -73,7 +80,12 @@ const Routes = Layer.mergeAll(
   Hyper.layer(Workshop.program, { ...page, path: Workshop.PATH }),
   HttpRouter.add('GET', '/', HttpServerResponse.redirect('/team/ENG', { status: 303 })),
   Auth.routes,
-  HttpRouter.add('GET', '/styles.css', HttpServerResponse.file(publicFile('styles.css'), { contentType: 'text/css' })),
+  // Rebuilt while the server runs (src/app/styles.ts): never from a cache.
+  HttpRouter.add(
+    'GET',
+    '/styles.css',
+    HttpServerResponse.file(publicFile('styles.css'), { contentType: 'text/css', headers: { 'cache-control': 'no-cache' } }),
+  ),
 ).pipe(Layer.provideMerge(Changes), Layer.provideMerge(Host))
 
 HttpRouter.serve(Routes).pipe(
