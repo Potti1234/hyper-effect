@@ -1,0 +1,32 @@
+{
+  "name": "@hyper-effect/jellyware",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Extensions for hyper-effect apps: loaded, swapped and unloaded while the app runs, on Graft's dynamic layers.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@graftland/graft": "0.7.0",
+    "@hyper-effect/core": "0.1.2"
+  },
+  "peerDependencies": {
+    "effect": "~4.1.0",
+    "foldkit": "~0.170.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.1.2",
+    "effect": "4.1.2",
+    "foldkit": "0.170.0",
+    "vitest": "^5.0.5"
+  }
+}

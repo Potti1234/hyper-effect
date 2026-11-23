@@ -11,3 +11,6 @@ output/
 *.cpuprofile
 # package builds (npm run build)
 packages/*/dist/
+
+# jellyware loader test fixtures
+packages/jellyware/test/.tmp/
