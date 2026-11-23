@@ -1,0 +1,7 @@
+{
+  "id": "standup",
+  "name": "Stand-up",
+  "version": "1",
+  "entry": "extension.ts",
+  "description": "Per member, the issues in progress and in review."
+}

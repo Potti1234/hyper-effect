@@ -5,7 +5,7 @@
   "description": "Jellyware: the Linear clone with extensions that are loaded, swapped and unloaded while it runs.",
   "type": "module",
   "scripts": {
-    "dev": "npm run build && tsx watch src/main.ts",
+    "dev": "npm run build && tsx watch --exclude \"extensions/**\" src/main.ts",
     "start": "npm run build && node --import tsx src/main.ts",
     "build": "npm run css",
     "css": "tailwindcss -i src/styles.css -o public/styles.css --minify",
@@ -14,9 +14,11 @@
     "check": "node scripts/check.mjs"
   },
   "dependencies": {
+    "@effect/platform-browser": "4.1.2",
     "@effect/platform-node": "4.1.2",
     "@foldkit/ui": "0.170.0",
     "@hyper-effect/core": "0.1.2",
+    "@hyper-effect/jellyware": "0.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "effect": "4.1.2",

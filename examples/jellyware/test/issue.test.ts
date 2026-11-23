@@ -2,6 +2,8 @@ import { assert, describe, it } from '@effect/vitest'
 import { Story } from 'foldkit/test'
 
 import { openPage, openStream, postEvent, readUntil, serve, token } from '@hyper-effect/core/testing'
+import { Contributions } from '@hyper-effect/jellyware'
+import { Layer } from 'effect'
 
 import { USER_COOKIE_NAME, cookieValue } from '@/app/auth'
 import * as IssuePage from '@/app/issue/page'
@@ -19,6 +21,7 @@ const target = seeded.issues.find(issue => issue.identifier === 'ENG-13')!
 const model = (): IssuePage.Model =>
   IssuePage.init({
     me: ada,
+    extensionNav: [],
     identifier: target.identifier,
     issue: target,
     members: SEED_MEMBERS,
@@ -122,7 +125,7 @@ describe('issue: update (Story)', () => {
 
 describe('issue: the page over HTTP', () => {
   const cookie = `${USER_COOKIE_NAME}=${cookieValue('Ada')}`
-  const served = () => serve(IssuePage.program, { path: '/issue/:identifier' }, undefined, Store.layer)
+  const served = () => serve(IssuePage.program, { path: '/issue/:identifier' }, undefined, Layer.merge(Store.layer, Contributions.layer))
 
   it('answers 404 for an unknown issue', async () => {
     const server = served()

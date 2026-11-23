@@ -4,7 +4,8 @@ import type { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { defineMessageUnion } from 'foldkit/message'
 import * as Navigation from 'foldkit/navigation'
 
-import { PageNotFound, type Program, keyBindings, region, sampleLatest } from '@hyper-effect/core'
+import { PageNotFound, type Program, keyBindings, memoizeLast, region, sampleLatest } from '@hyper-effect/core'
+import { Contributions, NavEntry } from '@hyper-effect/jellyware'
 
 import * as Icon from '@/lib/icon'
 import { renderTextarea } from '@/lib/textarea'
@@ -52,6 +53,8 @@ const Counts = S.Struct({ my: S.Number, ENG: S.Number, DES: S.Number })
 
 export const Model = S.Struct({
   me: Member,
+  /** Sidebar entries added by extensions. */
+  extensionNav: S.Array(NavEntry),
   identifier: S.String,
   /** Null once someone deleted it. */
   issue: S.NullOr(Issue),
@@ -94,6 +97,7 @@ export const Message = defineMessageUnion({
   ClickedClosePicker: {},
   GotMenuMessage: { message: DropdownMenu.Message },
   ClickedToggleTheme: {},
+  GotExtensionNav: { entries: S.Array(NavEntry) },
   ClickedDismissNotice: {},
   PressedShortcut: { shortcut: Shortcut, targetId: S.String },
   GotIssue: {
@@ -206,6 +210,7 @@ export const ScrollIntoView = Command.define('ScrollIntoView', {
 
 export type Flags = Readonly<{
   me: Member
+  extensionNav: ReadonlyArray<NavEntry>
   identifier: string
   issue: Issue
   members: ReadonlyArray<Member>
@@ -219,6 +224,7 @@ const MENU_ID = 'issue-menu'
 export const init = (flags: Flags): Update.Return<Model, Message> => ({
   model: {
     me: flags.me,
+    extensionNav: flags.extensionNav,
     identifier: flags.identifier,
     issue: flags.issue,
     members: flags.members,
@@ -396,6 +402,7 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
         return { model: nextModel }
       },
       ClickedToggleTheme: () => ({ model, commands: [SetTheme({ memberId: model.me.id, isDark: !model.me.isDark })] }),
+      GotExtensionNav: ({ entries }) => ({ model: { ...model, extensionNav: entries } }),
       ClickedDismissNotice: () => ({ model: { ...model, notice: null } }),
       PressedShortcut: ({ shortcut, targetId }) => onShortcut(model, shortcut, targetId),
       GotIssue: ({ issue, members, comments, activity, counts }) => ({
@@ -462,7 +469,20 @@ const sameSlice = (a: IssueSlice, b: IssueSlice): boolean =>
   a.counts.ENG === b.counts.ENG &&
   a.counts.DES === b.counts.DES
 
-export const subscriptions = Subscription.make<Model, Message, Workspace | Viewers>()(entry => ({
+const gotExtensionNav = memoizeLast((entries: ReadonlyArray<NavEntry>) => Message.GotExtensionNav({ entries }))
+
+export const subscriptions = Subscription.make<Model, Message, Workspace | Viewers | Contributions>()(entry => ({
+  // Sidebar entries added by extensions, as they come and go.
+  extensionNav: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(
+          Contributions.use(contributions => Effect.succeed(contributions.navChanges.pipe(Stream.map(gotExtensionNav)))),
+        ),
+    },
+  ),
   issue: entry(
     { identifier: S.String, memberId: S.String },
     {
@@ -826,11 +846,12 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       [
         region(h, {
           id: 'sidebar',
-          deps: [model.me, model.counts, model.identifier],
+          deps: [model.me, model.counts, model.identifier, model.extensionNav],
           render: () =>
             sidebar(
               {
                 me: model.me,
+                extensions: model.extensionNav,
                 active: '',
                 counts: model.counts,
                 onCreate: { href: `${teamHref(model)}?new=1` },
@@ -932,7 +953,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
 
 // PROGRAM
 
-export const program: Program<Model, Message, ClientMessage, Flags, Workspace | Viewers> = {
+export const program: Program<Model, Message, ClientMessage, Flags, Workspace | Viewers | Contributions> = {
   name: 'issue',
   Model,
   ClientMessage,
@@ -945,7 +966,8 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace | 
       const state = yield* workspace.current
       const slice = sliceOf(state, identifier, me.id)
       if (slice.issue === null) return yield* new PageNotFound()
-      return { me, identifier, ...slice, issue: slice.issue }
+      const extensionNav = yield* Contributions.use(contributions => contributions.navEntries)
+      return { me, extensionNav, identifier, ...slice, issue: slice.issue }
     }),
   init,
   update,

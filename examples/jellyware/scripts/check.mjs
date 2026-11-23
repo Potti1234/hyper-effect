@@ -9,7 +9,7 @@ import { chromium } from 'playwright'
 
    Usage: node scripts/check.mjs   (URL=… for another server) */
 
-const base = process.env.URL ?? 'http://localhost:4100'
+const base = process.env.URL ?? 'http://localhost:4200'
 const TIMEOUT = Number(process.env.CHECK_TIMEOUT ?? 6000)
 const results = []
 const check = (name, ok, detail = '') => {

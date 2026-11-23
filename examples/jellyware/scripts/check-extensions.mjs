@@ -1,0 +1,118 @@
+import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { chromium } from 'playwright'
+
+/* Browser check of extensions against a running server (npm start, with
+   extensions reloaded on change, the default): the Stand-up extension's
+   sidebar entry and page, a new version of it swapped in while the page is
+   open, and the extension unloaded and loaded again while another person's
+   page shows the sidebar.
+
+   It edits extensions/standup/ and puts the files back when it ends.
+
+   Usage: node scripts/check-extensions.mjs   (URL=… for another server) */
+
+const base = process.env.URL ?? 'http://localhost:4200'
+const TIMEOUT = Number(process.env.CHECK_TIMEOUT ?? 10000)
+const folder = fileURLToPath(new URL('../extensions/standup', import.meta.url))
+const pageFile = join(folder, 'page.ts')
+const original = readFileSync(pageFile, 'utf8')
+const parked = join(tmpdir(), `jellyware-standup-${Date.now()}`)
+
+const results = []
+const check = (name, ok, detail = '') => {
+  results.push({ name, ok })
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` (${detail})` : ''}`)
+}
+const until = (page, predicate, arg) =>
+  page.waitForFunction(predicate, arg, { timeout: TIMEOUT }).then(() => true, () => false)
+
+const browser = await chromium.launch()
+const people = []
+const signIn = async name => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  const page = await context.newPage()
+  const errors = []
+  page.on('pageerror', error => errors.push(`${name}: ${error}`))
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(`${name}: ${message.text()} ${message.location().url ?? ''}`)
+  })
+  await page.goto(`${base}/team/ENG`)
+  await page.getByLabel('Your name').fill(name)
+  const stream = page.waitForRequest(request => request.url().includes('/stream'))
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await stream
+  const person = { page, errors }
+  people.push(person)
+  return person
+}
+const hasEntry = page => page.evaluate(() => document.querySelector('#sidebar a[href="/standup"]') !== null)
+
+try {
+  const ada = await signIn('Ada')
+  const grace = await signIn('Grace')
+
+  check('the sidebar shows the extension’s entry', await hasEntry(ada.page))
+
+  // THE PAGE
+  const stream = ada.page.waitForRequest(request => request.url().includes('/_hyper/standup/'))
+  await ada.page.click('#sidebar a[href="/standup"]')
+  await stream
+  await ada.page.waitForSelector('#standup-board')
+  const cards = await ada.page.locator('#standup-board section').count()
+  check('the extension page shows one card per member', cards >= 6, `${cards} cards`)
+  check(
+    'its entry is marked as the page shown',
+    (await ada.page.getAttribute('#sidebar a[href="/standup"]', 'aria-current')) === 'page',
+  )
+
+  await ada.page.click('#standup-show-review')
+  check('a click on the extension page reaches its update', await until(ada.page, () => !document.querySelector('#standup-show-review').checked))
+
+  // A NEW VERSION WHILE THE PAGE IS OPEN
+  await ada.page.evaluate(() => {
+    window.__sameDocument = true
+  })
+  writeFileSync(pageFile, original.replace("['Stand-up']", "['Stand-up, version 2']"))
+  check(
+    'a new version of the extension reaches the open page',
+    await until(ada.page, () => document.querySelector('#standup-header h1')?.textContent === 'Stand-up, version 2'),
+  )
+  check('without reloading the page', await ada.page.evaluate(() => window.__sameDocument === true))
+  check(
+    'and the session’s state carried over (snapshot restored)',
+    await ada.page.evaluate(() => !document.querySelector('#standup-show-review').checked),
+  )
+  await ada.page.click('#standup-show-review')
+  check('the new version takes events', await until(ada.page, () => document.querySelector('#standup-show-review').checked))
+
+  // UNLOADING AND LOADING AGAIN
+  await ada.page.goto(`${base}/team/ENG`)
+  renameSync(folder, parked)
+  check('removing the extension removes its entry from an open page', await until(grace.page, () => document.querySelector('#sidebar a[href="/standup"]') === null))
+  const gone = await fetch(`${base}/standup`, { redirect: 'manual' })
+  check('and its page', gone.status === 404 || gone.status === 303, `status ${gone.status}`)
+  renameSync(parked, folder)
+  check('putting it back adds the entry again', await until(grace.page, () => document.querySelector('#sidebar a[href="/standup"]') !== null))
+
+  // A swapped page breaks its open stream on purpose, so Datastar reconnects:
+  // Chrome logs that one as a failed resource.
+  const errors = people.flatMap(person => person.errors).filter(error => !error.includes('/_hyper/standup/'))
+  check('no errors in the browser console', errors.length === 0, errors.slice(0, 3).join(' | '))
+} finally {
+  await browser.close()
+  try {
+    renameSync(parked, folder)
+  } catch {
+    // Not parked.
+  }
+  writeFileSync(pageFile, original)
+  rmSync(parked, { recursive: true, force: true })
+}
+
+const failed = results.filter(result => !result.ok)
+console.log(`\n${results.length - failed.length}/${results.length} passed`)
+process.exit(failed.length === 0 ? 0 : 1)

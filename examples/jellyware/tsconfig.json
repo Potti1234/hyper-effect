@@ -2,9 +2,15 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
-    "lib": ["ES2022", "DOM"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "moduleResolution": "bundler",
-    "types": ["node", "vite/client"],
+    "types": [
+      "node",
+      "vite/client"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -14,8 +20,15 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     }
   },
-  "include": ["src/**/*", "test/**/*", "vitest.config.ts", "vite.islands.config.ts"]
+  "include": [
+    "src/**/*",
+    "extensions/**/*",
+    "test/**/*",
+    "vitest.config.ts"
+  ]
 }

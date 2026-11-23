@@ -5,6 +5,7 @@ import { defineMessageUnion } from 'foldkit/message'
 import * as Navigation from 'foldkit/navigation'
 
 import { PageNotFound, type PageRequest, type Program, keyBindings, memoizeLast, region } from '@hyper-effect/core'
+import { Contributions, NavEntry } from '@hyper-effect/jellyware'
 
 import * as Icon from '@/lib/icon'
 import { cn } from '@/lib/utils'
@@ -90,6 +91,8 @@ export const FocusRequest = S.Struct({ selector: S.String, seq: S.Number })
 
 export const Model = S.Struct({
   me: Member,
+  /** Sidebar entries added by extensions. */
+  extensionNav: S.Array(NavEntry),
   scope: Scope,
   query: Query,
   members: S.Array(Member),
@@ -131,6 +134,7 @@ export const Message = defineMessageUnion({
   ClickedClearFilters: {},
   ClickedToggleGroup: { status: Status },
   ClickedToggleTheme: {},
+  GotExtensionNav: { entries: S.Array(NavEntry) },
   ChangedDraftTitle: { title: S.String },
   ChangedDraftDescription: { description: S.String },
   SubmittedDraft: {},
@@ -250,6 +254,7 @@ export const ScrollIntoView = Command.define('ScrollIntoView', {
 
 export type Flags = Readonly<{
   me: Member
+  extensionNav: ReadonlyArray<NavEntry>
   scope: Scope
   query: Query
   members: ReadonlyArray<Member>
@@ -273,6 +278,7 @@ const emptyDraft = (model: Pick<Model, 'scope' | 'me'>, status: Status | null): 
 export const init = (flags: Flags): Update.Return<Model, Message, Workspace> => {
   const model: Model = {
     me: flags.me,
+    extensionNav: flags.extensionNav,
     scope: flags.scope,
     query: flags.query,
     members: flags.members,
@@ -671,6 +677,7 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
       ClickedClearFilters: () => withQuery(model, { ...model.query, status: [], priority: [], assignee: [], label: [] }),
       ClickedToggleGroup: ({ status }) => ({ model: { ...model, collapsed: toggle(model.collapsed, status) } }),
       ClickedToggleTheme: () => ({ model, commands: [SetTheme({ memberId: model.me.id, isDark: !model.me.isDark })] }),
+      GotExtensionNav: ({ entries }) => ({ model: { ...model, extensionNav: entries } }),
       ChangedDraftTitle: ({ title }) =>
         model.draft === null ? { model } : { model: { ...model, draft: { ...model.draft, title, errors: { ...model.draft.errors, title: '' } } } },
       ChangedDraftDescription: ({ description }) =>
@@ -726,7 +733,20 @@ const gotWorkspace = memoizeLast((state: Pick<WorkspaceState, 'members' | 'issue
   Message.GotWorkspace({ members: state.members, issues: state.issues }),
 )
 
-export const subscriptions = Subscription.make<Model, Message, Workspace>()(entry => ({
+const gotExtensionNav = memoizeLast((entries: ReadonlyArray<NavEntry>) => Message.GotExtensionNav({ entries }))
+
+export const subscriptions = Subscription.make<Model, Message, Workspace | Contributions>()(entry => ({
+  // Sidebar entries added by extensions, as they come and go.
+  extensionNav: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(
+          Contributions.use(contributions => Effect.succeed(contributions.navChanges.pipe(Stream.map(gotExtensionNav)))),
+        ),
+    },
+  ),
   workspace: entry(
     {},
     {
@@ -1432,11 +1452,12 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
       [
         region(h, {
           id: 'sidebar',
-          deps: [model.me, navCounts, active],
+          deps: [model.me, navCounts, active, model.extensionNav],
           render: () =>
             sidebar(
               {
                 me: model.me,
+                extensions: model.extensionNav,
                 active,
                 counts: navCounts,
                 onCreate: { message: Message.ClickedCreate({ status: null }) },
@@ -1508,7 +1529,7 @@ const scopeOf = (request: PageRequest): Effect.Effect<Scope, PageNotFound> => {
 }
 
 /** Serves `/team/:team`, `/my-issues` and `/issues` (see `paths`). */
-export const program: Program<Model, Message, ClientMessage, Flags, Workspace> = {
+export const program: Program<Model, Message, ClientMessage, Flags, Workspace | Contributions> = {
   name: 'issues',
   Model,
   ClientMessage,
@@ -1521,6 +1542,7 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace> =
       const state = yield* workspace.current
       return {
         me,
+        extensionNav: yield* Contributions.use(contributions => contributions.navEntries),
         scope,
         query: queryFromUrl(request.url),
         members: state.members,

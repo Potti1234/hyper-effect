@@ -2,6 +2,8 @@ import { assert, describe, it } from '@effect/vitest'
 import { Story } from 'foldkit/test'
 
 import { openPage, openStream, postEvent, readUntil, serve, token } from '@hyper-effect/core/testing'
+import { Contributions } from '@hyper-effect/jellyware'
+import { Layer } from 'effect'
 
 import { USER_COOKIE_NAME, cookieValue } from '@/app/auth'
 import { type Issue, emptyQuery, queryFromUrl, searchForQuery } from '@/app/domain'
@@ -20,6 +22,7 @@ const issue = (identifier: string): Issue => seeded.issues.find(candidate => can
 const model = (overrides: Partial<Issues.Model> = {}): Issues.Model => ({
   ...Issues.init({
     me: ada,
+    extensionNav: [],
     scope: { _tag: 'Team', team: 'ENG' },
     query: emptyQuery,
     members: SEED_MEMBERS,
@@ -240,7 +243,7 @@ describe('domain: the query in the URL', () => {
 
 describe('issues: the page over HTTP', () => {
   const cookie = `${USER_COOKIE_NAME}=${cookieValue('Ada')}`
-  const served = () => serve(Issues.program, { path: '/team/:team', paths: Issues.paths }, undefined, Store.layer)
+  const served = () => serve(Issues.program, { path: '/team/:team', paths: Issues.paths }, undefined, Layer.merge(Store.layer, Contributions.layer))
 
   it('sends a signed-out visitor to sign in, and answers 404 for an unknown team', async () => {
     const server = served()

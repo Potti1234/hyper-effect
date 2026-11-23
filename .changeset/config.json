@@ -13,6 +13,8 @@
     "@hyper-effect/example-dispatch",
     "@hyper-effect/example-admin",
     "linear-clone",
-    "starter"
+    "starter",
+    "@hyper-effect/jellyware",
+    "@hyper-effect/example-jellyware"
   ]
 }

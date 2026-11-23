@@ -1,5 +1,7 @@
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
+import type { NavEntry } from '@hyper-effect/jellyware'
+
 import * as Icon from '@/lib/icon'
 import { cn } from '@/lib/utils'
 import { kbd } from '@/ui/kbd'
@@ -9,7 +11,7 @@ import { avatar, teamBadge } from './icons'
 
 /* The app shell: Linear's left sidebar and the frame around a page. Each
    page renders it (pages are separate programs; navigation is a page load),
-   with the counts it keeps live. */
+   with the counts it keeps live, and the entries extensions add. */
 
 export type NavCounts = Readonly<{ my: number; ENG: number; DES: number }>
 
@@ -18,12 +20,15 @@ export type SidebarProps<Msg> = Readonly<{
   /** The href of the page shown, to highlight its entry. */
   active: string
   counts: NavCounts
+  /** Entries added by extensions, under "Extensions". */
+  extensions: ReadonlyArray<NavEntry>
   /** New issue: a Message on pages that have the dialog, a link elsewhere. */
   onCreate: Readonly<{ message: Msg } | { href: string }>
   /** Opens the command palette (Ctrl/Cmd+K). */
   onPalette?: Msg
   isDark: boolean
-  onToggleTheme: Msg
+  /** The theme switch; left out where the page has no Message for it. */
+  onToggleTheme?: Msg
 }>
 
 export const VIEWS: ReadonlyArray<Readonly<{ href: string; label: string; icon: string }>> = [
@@ -163,6 +168,19 @@ export const sidebar = <Msg>(props: SidebarProps<Msg>, h: HtmlBuilder<Msg>): Htm
               isActive: props.active === view.href,
             }),
           ),
+          ...(props.extensions.length === 0
+            ? []
+            : [
+                sectionHeading(h, 'Extensions'),
+                ...props.extensions.map(entry =>
+                  navLink(h, {
+                    href: entry.href,
+                    label: entry.label,
+                    icon: Icon.icon(entry.icon, { class: 'size-4' }, h),
+                    isActive: props.active === entry.href,
+                  }),
+                ),
+              ]),
         ],
       ),
       h.div(
@@ -170,17 +188,21 @@ export const sidebar = <Msg>(props: SidebarProps<Msg>, h: HtmlBuilder<Msg>): Htm
         [
           avatar(props.me, h, 'md'),
           h.span([h.Class('min-w-0 flex-1 truncate text-[13px] font-medium')], [firstName(props.me.name)]),
-          h.button(
-            [
-              h.Type('button'),
-              h.Id('theme-toggle'),
-              h.AriaLabel(props.isDark ? 'Use light theme' : 'Use dark theme'),
-              h.Title(props.isDark ? 'Light theme' : 'Dark theme'),
-              h.Class('flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground'),
-              h.OnClick(props.onToggleTheme),
-            ],
-            [Icon.icon(props.isDark ? 'sun' : 'moon', { class: 'size-3.5' }, h)],
-          ),
+          ...(props.onToggleTheme === undefined
+            ? []
+            : [
+                h.button(
+                  [
+                    h.Type('button'),
+                    h.Id('theme-toggle'),
+                    h.AriaLabel(props.isDark ? 'Use light theme' : 'Use dark theme'),
+                    h.Title(props.isDark ? 'Light theme' : 'Dark theme'),
+                    h.Class('flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground'),
+                    h.OnClick(props.onToggleTheme),
+                  ],
+                  [Icon.icon(props.isDark ? 'sun' : 'moon', { class: 'size-3.5' }, h)],
+                ),
+              ]),
           // Signing out is a navigation (a form post), not an event.
           h.form(
             [h.Method('post'), h.Action('/logout')],
