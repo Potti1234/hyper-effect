@@ -744,11 +744,75 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
   program: Program<Model, Message, ClientMessage, Flags, R>,
   options: Options<R> = {},
 ) => {
+  const routes = pageRoutes(program, options)
+  return HttpRouter.use(router =>
+    Effect.gen(function* () {
+      if ((options.datastarUrl ?? DATASTAR_PATH) === DATASTAR_PATH) yield* serveDatastar(router)
+      yield* router.addAll(yield* routes)
+    }),
+  )
+}
+
+/** A route of a page, as `pageRoutes` returns it. */
+export type PageRoute = HttpRouter.Route<never, HttpRouter.Provided>
+
+/** The `GET DATASTAR_PATH` route: the Datastar bundle shipped with
+ *  hyper-effect, gzipped when the browser accepts it. */
+const datastarRoute: PageRoute = HttpRouter.route(
+  'GET',
+  DATASTAR_PATH,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest
+    if (Compression.negotiate(request.headers['accept-encoding']) === 'gzip') {
+      datastarGzip ??= gzipSync(DATASTAR_SOURCE)
+      return HttpServerResponse.uint8Array(datastarGzip, {
+        contentType: 'text/javascript; charset=utf-8',
+        headers: { ...DATASTAR_HEADERS, 'content-encoding': 'gzip' },
+      })
+    }
+    return HttpServerResponse.text(DATASTAR_SOURCE, {
+      contentType: 'text/javascript; charset=utf-8',
+      headers: DATASTAR_HEADERS,
+    })
+  }),
+)
+
+/** Adds `datastarRoute` to `router` unless it serves it already. */
+export const serveDatastar = (router: HttpRouter.HttpRouter): Effect.Effect<void> =>
+  Effect.suspend(() => {
+    if (servingDatastar.has(router)) return Effect.void
+    servingDatastar.add(router)
+    return router.addAll([datastarRoute])
+  })
+
+/** The routes of a page, without adding them to a router: the page itself
+ *  (one route per path pattern) and its session endpoints under
+ *  `/_hyper/<name>/`. Building them starts the page's bookkeeping in the
+ *  current scope; closing that scope closes the page's live sessions and
+ *  completes their snapshot writes, as releasing `layer` does.
+ *
+ *  `layer` adds them to the app's router once. A `PageHost` adds and removes
+ *  them while the server runs. The Datastar bundle is not among them: see
+ *  `serveDatastar`. */
+export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags, R>(
+  program: Program<Model, Message, ClientMessage, Flags, R>,
+  options: Options<R> = {},
+) => {
   if (options.node !== undefined && !NODE.test(options.node)) {
     throw new Error(`hyper-effect: node "${options.node}" must be 1–16 lowercase letters or digits.`)
   }
-  return HttpRouter.use(router =>
-    Effect.gen(function* () {
+  return Effect.gen(function* () {
+      const routes: Array<PageRoute> = []
+      const route = {
+        add: (
+          method: PageRoute['method'],
+          path: HttpRouter.PathInput,
+          handler: PageRoute['handler'],
+        ): Effect.Effect<void> =>
+          Effect.sync(() => {
+            routes.push(HttpRouter.route(method, path, handler))
+          }),
+      }
       const services = yield* Effect.context<R>()
       const lifetime = yield* Effect.scope
       let shuttingDown = false
@@ -1156,30 +1220,8 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         ].join('\n')
       }
 
-      if (datastarUrl === DATASTAR_PATH && !servingDatastar.has(router)) {
-        servingDatastar.add(router)
-        yield* router.add(
-          'GET',
-          DATASTAR_PATH,
-          Effect.gen(function* () {
-            const request = yield* HttpServerRequest.HttpServerRequest
-            if (Compression.negotiate(request.headers['accept-encoding']) === 'gzip') {
-              datastarGzip ??= gzipSync(DATASTAR_SOURCE)
-              return HttpServerResponse.uint8Array(datastarGzip, {
-                contentType: 'text/javascript; charset=utf-8',
-                headers: { ...DATASTAR_HEADERS, 'content-encoding': 'gzip' },
-              })
-            }
-            return HttpServerResponse.text(DATASTAR_SOURCE, {
-              contentType: 'text/javascript; charset=utf-8',
-              headers: DATASTAR_HEADERS,
-            })
-          }),
-        )
-      }
-
       for (const pattern of patterns) {
-      yield* router.add(
+      yield* route.add(
         'GET',
         /* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
         pattern as HttpRouter.PathInput,
@@ -1273,7 +1315,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
       )
       }
 
-      yield* router.add(
+      yield* route.add(
         'GET',
         `/_hyper/${program.name}/s/:id/stream`,
         Effect.gen(function* () {
@@ -1398,7 +1440,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         }),
       )
 
-      yield* router.add(
+      yield* route.add(
         'POST',
         `/_hyper/${program.name}/s/:id`,
         Effect.gen(function* () {
@@ -1446,7 +1488,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
 
       // Navigation within the session (`onUrlChange`): the page posts the
       // URL it went to. 204: the session took it; `{ load }`: load a page.
-      yield* router.add(
+      yield* route.add(
         'POST',
         `/_hyper/${program.name}/s/:id${NAVIGATE_PATH}`,
         Effect.gen(function* () {
@@ -1502,7 +1544,7 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
       // multipart. The same checks as events, then limits on bytes and files.
       // Files are read into memory (the byte limit bounds them) and reach
       // `update` as web `File`s, exactly as in the browser.
-      yield* router.add(
+      yield* route.add(
         'POST',
         `/_hyper/${program.name}/s/:id${UPLOAD_PATH}`,
         Effect.gen(function* () {
@@ -1596,8 +1638,8 @@ export const layer = <Model, Message, ClientMessage extends Message, Flags, R>(
         Effect.forever,
         Effect.forkScoped,
       )
-    }),
-  )
+      return routes
+    })
 }
 
 /** `GET /_hyper/metrics` (JSON) and `POST /_hyper/metrics/reset`. Opt-in: it
