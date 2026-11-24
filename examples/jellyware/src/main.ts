@@ -75,6 +75,16 @@ const Changes = Jellyware.changesLayer({
   checks: [Jellyware.importCheck(importRules), Agent.typecheck(appDirectory, workDirectory)],
   protectedDirectories: [join(appDirectory, 'src')],
   review: true,
+  // What the app has now, for the agent: pages, slots, commands, settings.
+  guide: Jellyware.guide({
+    appPages: [
+      { name: Issues.program.name, paths: ['/team/:team', ...Issues.paths] },
+      { name: IssuePage.program.name, paths: ['/issue/:identifier'] },
+      { name: Workshop.program.name, paths: [Workshop.PATH] },
+      { name: null, paths: ['/', '/login', '/logout', '/styles.css'] },
+    ],
+    slots: Extensions.slotsForGuide,
+  }),
 }).pipe(Layer.provideMerge(Loaded))
 
 const Routes = Layer.mergeAll(

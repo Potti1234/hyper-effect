@@ -41,12 +41,22 @@ const run = (id: string, state: Run['state']): Run => ({
   reviewer: null,
 })
 
-const standup: ExtensionStatus = { id: 'standup', name: 'Stand-up', version: '1', state: 'active', running: 1, error: null, settings: [] }
+const standup: ExtensionStatus = {
+  id: 'standup',
+  name: 'Stand-up',
+  version: '1',
+  description: null,
+  state: 'active',
+  running: 1,
+  error: null,
+  settings: [],
+}
 
 const related: ExtensionStatus = {
   id: 'related',
   name: 'Related issues',
   version: '2',
+  description: null,
   state: 'active',
   running: 1,
   error: null,

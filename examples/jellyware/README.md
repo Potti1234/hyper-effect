@@ -41,7 +41,7 @@ export default extension(
 
 ## Changing the app by prompt
 
-`/extensions` ("Manage extensions" in the sidebar) takes a prompt. The agent, [pi](https://github.com/badlogic/pi-mono), works on a copy of `extensions/` in `.jellyware/runs/<id>/`; the app checks the result (manifests, a credential scan, a typecheck), installs it, loads it, and sends failures back to pi up to three times. Each run shows its state, the extensions it changed, pi's summary and any error; an installed run can be undone while nothing newer changed the same extensions. Runs are kept in `.jellyware/runs/`.
+`/extensions` ("Manage extensions" in the sidebar) takes a prompt. The agent, [pi](https://github.com/badlogic/pi-mono), works on a copy of `extensions/` in `.jellyware/runs/<id>/`, with the app's rules and a guide to what the app has now (its pages, slots, commands, sidebar entries and extensions; in the run's `instructions.md`); the app checks the result (manifests, a credential scan, a typecheck), installs it, loads it, and sends failures back to pi up to three times. Each run shows its state, the extensions it changed, pi's summary and any error; an installed run can be undone while nothing newer changed the same extensions. Runs are kept in `.jellyware/runs/`.
 
 A run that passes the checks waits for review: the page shows the diff of every file it changes, and an administrator approves it (it goes live) or rejects it. Only administrators prompt, review, undo and change settings; members see the runs and their changes. Ada is the seeded administrator (sign in as "Ada"), and administrators give others the role in the "People" list on `/extensions`.
 

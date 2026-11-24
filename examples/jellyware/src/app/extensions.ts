@@ -3,7 +3,15 @@ import { KeyValueStore } from 'effect/persistence'
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { type Options, type PageRequest, PageHost, region, secretFromEnvironment } from '@hyper-effect/core'
-import { Contributions, type ExtensionSettings, NavEntry, type Provided, type SlotAction, type SlotContent } from '@hyper-effect/jellyware'
+import {
+  Contributions,
+  type ExtensionSettings,
+  NavEntry,
+  type Provided,
+  type SlotAction,
+  type SlotContent,
+  type SlotInfo,
+} from '@hyper-effect/jellyware'
 
 import { cn } from '@/lib/utils'
 
@@ -56,6 +64,15 @@ export const issueSidebar = <R>(
         content({ issueId: context['issueId'] ?? '', identifier: context['identifier'] ?? '', memberId: context['memberId'] ?? '' }),
     }),
   )
+
+/** The slots above, described for the agent's guide (src/app/agent.ts). */
+export const slotsForGuide: ReadonlyArray<SlotInfo> = [
+  {
+    name: ISSUE_SIDEBAR,
+    where: "on an issue's page, under its properties",
+    how: "Add a card with `issueSidebar(id, context => Stream<SlotContent>)` from `#app/extensions`; the context has `issueId`, `identifier` (ENG-4) and `memberId` (the member looking). Buttons: `action(label, command, args)`.",
+  },
+]
 
 /** A button for a card: runs the command `command` with `args` (JSON) for
  *  the member who clicks. Register the command with `Contributions.command`;

@@ -19,7 +19,9 @@ import { importRules } from './extension-rules.ts'
    The agent is pi (https://github.com/badlogic/pi-mono), run once per
    attempt in print mode, in the run's stage folder, with file tools only
    (read, edit, write, grep, find, ls; no shell). A retry continues the same
-   pi session with what failed. The pi extension in src/pi-guard.ts limits
+   pi session with what failed. Its system prompt gets the rules below and
+   the app's guide: the pages, slots, commands, sidebar entries and
+   extensions running now (`guide` in @hyper-effect/jellyware). The pi extension in src/pi-guard.ts limits
    those tools: writes only in the stage, reads in the stage and the
    repository but not in `.jellyware`, `.git`, session snapshots or `.env`
    files.
@@ -135,7 +137,7 @@ You change the extensions of a running hyper-effect app, a clone of Linear's iss
 - To add something to an issue page instead of a page of its own, show a card in the slot under the issue's properties: \`issueSidebar(id, context => stream of SlotContent)\` with buttons made by \`action(label, command, args)\`, and register each command with \`Contributions.command({ id, run: ({ args, memberId }) => ... })\`; decode \`args\` and check what the member may do in \`run\`. A command only administrators should run names \`roles: ['admin']\`; the app then checks the role and hides the button from members. \`related/\` in the current directory is the reference.
 - Values people should be able to change without a prompt go into \`settings\` in extension.json (per key: "type" string, number (with "min"/"max"), boolean or select (with "options"), a "label" and a "default"); read them while building with \`const settings = yield* ExtensionSettings\` from \`@hyper-effect/jellyware\` (\`settings.number('max')\`, \`settings.string\`, \`settings.boolean\`). \`related/\` declares three.
 - Extensions run inside the app's server, so a check refuses code that reaches beyond the app's services. Import only: ${allowedImports()}. Type-only imports (\`import type\`) of anything are fine. Do not use \`process\`, \`globalThis\`, \`require\`, \`eval\`, \`Function\`, \`fetch\`, \`WebSocket\`, \`import.meta\`, a computed \`import()\`, or Effect's \`Config\`/\`ConfigProvider\`.
-- Page \`name\`s and paths must not collide with the app's pages (issues, issue, /team, /issue, /issues, /my-issues) or other extensions.
+- Page \`name\`s and paths, command ids, sidebar entry ids and card ids must be new: the guide below lists every one in use, and which extension owns it.
 - Use Tailwind classes the app already uses where you can.
 - End with two or three sentences on what you changed.
 `
@@ -160,10 +162,12 @@ export const piAgent = (options: PiOptions): Agent => {
   return { work: task => work(options, task) }
 }
 
-const work = (options: PiOptions, { prompt, stage, runDirectory, feedback }: Task) =>
+const work = (options: PiOptions, { prompt, stage, runDirectory, feedback, guide }: Task) =>
   Effect.gen(function* () {
+    // The rules, then what the app has now (made by the app at the run's start).
     const instructionsFile = join(runDirectory, 'instructions.md')
-    yield* Effect.promise(() => writeFile(instructionsFile, instructions(options.appDirectory, options.repository)))
+    const text = instructions(options.appDirectory, options.repository) + (guide === null ? '' : `\n${guide}`)
+    yield* Effect.promise(() => writeFile(instructionsFile, text))
     const message =
       feedback === null
         ? prompt
