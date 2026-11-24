@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Schema as S, type Scope, Stream, SubscriptionRef } from 'effect'
+import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Scope, Stream, SubscriptionRef } from 'effect'
 
 /* What extensions add to the app's own pages, with change feeds the pages
    subscribe to. Every entry belongs to the scope that added it: an
@@ -18,6 +18,9 @@ import { Cause, Context, Effect, Layer, Schema as S, type Scope, Stream, Subscri
      of `SlotContent`, plain data the page renders itself. Extension code
      runs in the page's Subscription, never in its update or view, and a
      stream that fails shows as a failed card instead of breaking the page.
+     A slot shows once every card has content; a card that has none after
+     `cardTimeout` shows as loading, so one slow card does not hide the
+     others.
    - Commands: what a slot's actions run, by id, with JSON arguments, for a
      member. A page only runs actions it shows (they are in its Model), so a
      browser cannot invent a command or its arguments. */
@@ -102,72 +105,95 @@ export class Contributions extends Context.Service<
     readonly run: (id: string, input: CommandInput) => Effect.Effect<string, string>
   }
 >()('@hyper-effect/jellyware/Contributions') {
-  static readonly layer: Layer.Layer<Contributions> = Layer.effect(
-    Contributions,
-    Effect.gen(function* () {
-      const navs = yield* stacks<NavEntry>()
-      const slots = yield* stacks<SlotEntry>()
-      const commands = yield* stacks<CommandEntry>()
+  /** The registry; a slot card without content after `cardTimeout`
+   *  (default one second) shows as loading until its content comes. */
+  static readonly make = (options: Readonly<{ cardTimeout?: Duration.Input }> = {}): Layer.Layer<Contributions> =>
+    Layer.effect(
+      Contributions,
+      Effect.gen(function* () {
+        const cardTimeout = options.cardTimeout ?? Duration.seconds(1)
+        const navs = yield* stacks<NavEntry>()
+        const slots = yield* stacks<SlotEntry>()
+        const commands = yield* stacks<CommandEntry>()
 
-      return Contributions.of({
-        nav: entry => navs.add(entry.id, entry),
-        navChanges: SubscriptionRef.changes(navs.live),
-        navEntries: SubscriptionRef.get(navs.live),
-        slot: <R,>(entry: SlotEntry<R>) =>
-          Effect.gen(function* () {
-            // The extension's services, for content streams run by pages.
-            const services = yield* Effect.context<R>()
-            yield* slots.add(`${entry.slot}\u0000${entry.id}`, {
-              slot: entry.slot,
-              id: entry.id,
-              content: context => entry.content(context).pipe(Stream.provideContext(services)),
-            })
-          }),
-        slotCards: (slot, context) =>
-          SubscriptionRef.changes(slots.live).pipe(
-            Stream.map(all => all.filter(entry => entry.slot === slot)),
-            Stream.changesWith((a, b) => a.length === b.length && a.every((entry, index) => entry === b[index])),
-            Stream.switchMap(entries =>
-              entries.length === 0
-                ? Stream.succeed<ReadonlyArray<SlotCard>>([])
-                : Stream.zipLatestAll(
-                    ...entries.map(entry =>
-                      entry.content(context).pipe(
-                        Stream.catchCause(cause =>
-                          Stream.succeed<SlotContent>({
-                            title: entry.id,
-                            items: [],
-                            actions: [],
-                            note: `This card failed: ${Cause.squash(cause)}`,
-                          }),
-                        ),
-                        Stream.map((content): SlotCard => ({ id: entry.id, content })),
+        return Contributions.of({
+          nav: entry => navs.add(entry.id, entry),
+          navChanges: SubscriptionRef.changes(navs.live),
+          navEntries: SubscriptionRef.get(navs.live),
+          slot: <R,>(entry: SlotEntry<R>) =>
+            Effect.gen(function* () {
+              // The extension's services, for content streams run by pages.
+              const services = yield* Effect.context<R>()
+              yield* slots.add(`${entry.slot}\u0000${entry.id}`, {
+                slot: entry.slot,
+                id: entry.id,
+                content: context => entry.content(context).pipe(Stream.provideContext(services)),
+              })
+            }),
+          slotCards: (slot, context) =>
+            SubscriptionRef.changes(slots.live).pipe(
+              Stream.map(all => all.filter(entry => entry.slot === slot)),
+              Stream.changesWith((a, b) => a.length === b.length && a.every((entry, index) => entry === b[index])),
+              Stream.switchMap(entries =>
+                entries.length === 0
+                  ? Stream.succeed<ReadonlyArray<SlotCard>>([])
+                  : Stream.zipLatestAll(
+                      ...entries.map(entry =>
+                        withLoading(
+                          entry.id,
+                          cardTimeout,
+                          entry.content(context).pipe(
+                            Stream.catchCause(cause =>
+                              Stream.succeed<SlotContent>({
+                                title: entry.id,
+                                items: [],
+                                actions: [],
+                                note: `This card failed: ${Cause.squash(cause)}`,
+                              }),
+                            ),
+                          ),
+                        ).pipe(Stream.map((content): SlotCard => ({ id: entry.id, content }))),
                       ),
                     ),
-                  ),
+              ),
             ),
-          ),
-        command: <R,>(entry: CommandEntry<R>) =>
-          Effect.gen(function* () {
-            const services = yield* Effect.context<R>()
-            yield* commands.add(entry.id, {
-              id: entry.id,
-              run: input => entry.run(input).pipe(Effect.provideContext(services)),
-            })
-          }),
-        run: (id, input) =>
-          Effect.flatMap(SubscriptionRef.get(commands.live), live => {
-            const command = live.find(entry => entry.id === id)
-            return command === undefined
-              ? Effect.fail('This action is no longer available.')
-              : command.run(input).pipe(
-                  Effect.catchDefect(defect => Effect.fail(`The action failed: ${String(defect)}`)),
-                )
-          }),
-      })
+          command: <R,>(entry: CommandEntry<R>) =>
+            Effect.gen(function* () {
+              const services = yield* Effect.context<R>()
+              yield* commands.add(entry.id, {
+                id: entry.id,
+                run: input => entry.run(input).pipe(Effect.provideContext(services)),
+              })
+            }),
+          run: (id, input) =>
+            Effect.flatMap(SubscriptionRef.get(commands.live), live => {
+              const command = live.find(entry => entry.id === id)
+              return command === undefined
+                ? Effect.fail('This action is no longer available.')
+                : command.run(input).pipe(
+                    Effect.catchDefect(defect => Effect.fail(`The action failed: ${String(defect)}`)),
+                  )
+            }),
+        })
+      }),
+    )
+
+  static readonly layer: Layer.Layer<Contributions> = Contributions.make()
+}
+
+/** A card's content, preceded by a loading card when it has none after
+ *  `timeout`. */
+const withLoading = (id: string, timeout: Duration.Input, content: Stream.Stream<SlotContent>) =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const arrived = yield* Deferred.make<void>()
+      const loading = Stream.fromEffect(Effect.sleep(timeout)).pipe(
+        Stream.filterEffect(() => Effect.map(Deferred.isDone(arrived), done => !done)),
+        Stream.map((): SlotContent => ({ title: id, items: [], actions: [], note: 'Loading…' })),
+      )
+      return Stream.merge(content.pipe(Stream.tap(() => Deferred.succeed(arrived, undefined))), loading)
     }),
   )
-}
 
 /** A stack of entries per id; `live` holds the newest of each id, in the
  *  order the ids were first added. */

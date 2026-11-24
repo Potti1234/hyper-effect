@@ -1,5 +1,6 @@
 import { assert, describe, it } from '@effect/vitest'
-import { Context, Effect, Exit, Scope, Stream } from 'effect'
+import { Context, Effect, Exit, Fiber, Scope, Stream } from 'effect'
+import { TestClock } from 'effect/testing'
 
 import { Contributions, type SlotCard, type SlotContent } from '../src/contributions'
 
@@ -36,6 +37,31 @@ describe('contributions: slots and commands', () => {
 
       yield* Scope.close(scope, Exit.void)
       assert.deepStrictEqual(yield* firstCards(contributions.slotCards('issue.sidebar', { issueId: 'ENG-1' })), [])
+    }).pipe(Effect.provide(Contributions.layer)),
+  )
+
+  it.effect('shows a card without content as loading after the time limit, so the others show', () =>
+    Effect.gen(function* () {
+      const contributions = yield* Contributions
+      const scope = yield* Scope.make()
+      yield* contributions.slot({ slot: 's', id: 'quick', content: () => Stream.succeed(card('Quick')) }).pipe(Scope.provide(scope))
+      yield* contributions
+        .slot({ slot: 's', id: 'slow', content: () => Stream.fromEffect(Effect.as(Effect.sleep('5 seconds'), card('Slow'))) })
+        .pipe(Scope.provide(scope))
+      const fiber = yield* contributions.slotCards('s', {}).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild)
+      // A second at a time: each step lets the slot's fibers start their timers.
+      for (let second = 0; second < 6; second++) {
+        yield* Effect.yieldNow
+        yield* TestClock.adjust('1 second')
+      }
+      const seen = yield* Fiber.join(fiber)
+      assert.deepStrictEqual(
+        seen.map(cards => cards.map(each => each.content.note ?? each.content.title)),
+        [
+          ['Quick', 'Loading…'],
+          ['Quick', 'Slow'],
+        ],
+      )
     }).pipe(Effect.provide(Contributions.layer)),
   )
 
