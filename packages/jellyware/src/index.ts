@@ -32,6 +32,7 @@ export {
   type SlotEntry,
   SlotItem,
 } from './contributions.ts'
+export { DEFAULT_GLOBALS, DEFAULT_NAMES, type ImportRules, type NamedImports, checkFolder, findProblems, importCheck } from './imports.ts'
 export { graph, type Graph, type MountState, type Provided, type Requirement } from './graft.ts'
 export { ExtensionStatus, Extensions, Manifest, SettingsChange, layer, type Options } from './loader.ts'
 export { ExtensionSettings, SettingField, SettingSpec, type SettingValue } from './settings.ts'
