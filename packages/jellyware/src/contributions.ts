@@ -10,7 +10,7 @@ import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Sc
    mounted before the old one is closed, so its entries replace the old ones
    without a page losing them in between.
 
-   Three kinds:
+   Four kinds:
    - Sidebar entries: plain data.
    - Slots: places in the app's pages (named by the app, such as
      `issue.sidebar`) where extensions show content. An extension gives a
@@ -20,7 +20,11 @@ import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Sc
      stream that fails shows as a failed card instead of breaking the page.
      A slot shows once every card has content; a card that has none after
      `cardTimeout` shows as loading, so one slow card does not hide the
-     others.
+     others. A page decides how it shows a slot's content: as cards, as
+     entries of a menu, and so on.
+   - Badges: short labels a page shows on things it lists (issues), by the
+     thing's id. Like slots, from a stream per context; a stream that fails
+     or has nothing yet adds no badges.
    - Commands: what a slot's actions run, by id, with JSON arguments, for a
      member. A page only runs actions it shows (they are in its Model), so a
      browser cannot invent a command or its arguments. A command may name
@@ -37,14 +41,6 @@ import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Sc
 export const CurrentExtension = Context.Reference<string | null>('@hyper-effect/jellyware/CurrentExtension', {
   defaultValue: () => null,
 })
-
-/** What is registered now, the newest entry of each id, with the
- *  extension that added it (null: the app). */
-export type Inventory = Readonly<{
-  nav: ReadonlyArray<Readonly<{ entry: NavEntry; owner: string | null }>>
-  slots: ReadonlyArray<Readonly<{ slot: string; id: string; owner: string | null }>>
-  commands: ReadonlyArray<Readonly<{ id: string; roles: ReadonlyArray<string> | null; owner: string | null }>>
-}>
 
 /** A sidebar entry. `icon` is a name from the app's icon set. */
 export const NavEntry = S.Struct({
@@ -80,6 +76,34 @@ export type SlotContent = typeof SlotContent.Type
 export const SlotCard = S.Struct({ id: S.String, content: SlotContent })
 export type SlotCard = typeof SlotCard.Type
 
+export const BadgeTone = S.Literals(['neutral', 'info', 'success', 'warning', 'danger'])
+export type BadgeTone = typeof BadgeTone.Type
+
+/** A short label on one thing a page lists. */
+export const Badge = S.Struct({
+  /** The id of the thing it marks, as the slot names it (an issue's id). */
+  target: S.String,
+  label: S.String,
+  tone: BadgeTone,
+})
+export type Badge = typeof Badge.Type
+
+/** A badge as a page keeps it: with the id of the entry that gave it. */
+export const SlotBadge = S.Struct({ source: S.String, ...Badge.fields })
+export type SlotBadge = typeof SlotBadge.Type
+
+const Owner = S.NullOr(S.String)
+
+/** What is registered now, the newest entry of each id, with the
+ *  extension that added it (null: the app). */
+export const Inventory = S.Struct({
+  nav: S.Array(S.Struct({ entry: NavEntry, owner: Owner })),
+  slots: S.Array(S.Struct({ slot: S.String, id: S.String, owner: Owner })),
+  badges: S.Array(S.Struct({ slot: S.String, id: S.String, owner: Owner })),
+  commands: S.Array(S.Struct({ id: S.String, roles: S.NullOr(S.Array(S.String)), owner: Owner })),
+})
+export type Inventory = typeof Inventory.Type
+
 /** Where a slot is shown: what the page knows, as strings (an issue id, the
  *  member looking). Each slot documents its keys. */
 export type SlotContext = Readonly<Record<string, string>>
@@ -92,6 +116,15 @@ export type SlotEntry<R = never> = Readonly<{
   /** The content for a page's context, now and whenever it changes. It
    *  should emit at once: the slot shows once every card has content. */
   content: (context: SlotContext) => Stream.Stream<SlotContent, never, R>
+}>
+
+export type BadgeEntry<R = never> = Readonly<{
+  /** The slot's name, such as `issues.badges`. */
+  slot: string
+  /** Unique per slot; a newer entry with the same id replaces the older. */
+  id: string
+  /** The badges for a page's context, now and whenever they change. */
+  content: (context: SlotContext) => Stream.Stream<ReadonlyArray<Badge>, never, R>
 }>
 
 /** Who runs a command, and with what. */
@@ -132,6 +165,11 @@ export class Contributions extends Context.Service<
     /** The cards of a slot for a context, now and after every change of an
      *  entry or of its content. */
     readonly slotCards: (slot: string, context: SlotContext) => Stream.Stream<ReadonlyArray<SlotCard>>
+    /** Adds badges to a slot for the life of the current scope. */
+    readonly badges: <R>(entry: BadgeEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
+    /** The badges of a slot for a context, from every entry, now and after
+     *  every change. */
+    readonly slotBadges: (slot: string, context: SlotContext) => Stream.Stream<ReadonlyArray<SlotBadge>>
     /** Adds a command for the life of the current scope. */
     readonly command: <R>(entry: CommandEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
     /** Runs a command; fails with a line for the member when it is gone or
@@ -139,6 +177,8 @@ export class Contributions extends Context.Service<
     readonly run: (id: string, input: CommandInput) => Effect.Effect<string, string>
     /** Everything registered now, with who added it. */
     readonly inventory: Effect.Effect<Inventory>
+    /** The same, now and after every change. */
+    readonly inventoryChanges: Stream.Stream<Inventory>
   }
 >()('@hyper-effect/jellyware/Contributions') {
   /** The registry. */
@@ -150,7 +190,15 @@ export class Contributions extends Context.Service<
         const navs = yield* stacks<NavEntry>()
         const slots = yield* stacks<SlotEntry>()
         const commands = yield* stacks<CommandEntry>()
+        const badgeEntries = yield* stacks<BadgeEntry>()
         const appServices = yield* Effect.context<R>()
+
+        const inventoryNow = (): Inventory => ({
+          nav: navs.owned().map(({ value, owner }) => ({ entry: value, owner })),
+          slots: slots.owned().map(({ value, owner }) => ({ slot: value.slot, id: value.id, owner })),
+          badges: badgeEntries.owned().map(({ value, owner }) => ({ slot: value.slot, id: value.id, owner })),
+          commands: commands.owned().map(({ value, owner }) => ({ id: value.id, roles: value.roles ?? null, owner })),
+        })
 
         const rolesOf = (memberId: string): Effect.Effect<ReadonlyArray<string>> =>
           options.rolesOf === undefined ? Effect.succeed([]) : options.rolesOf(memberId).pipe(Effect.provideContext(appServices))
@@ -198,9 +246,9 @@ export class Contributions extends Context.Service<
                   ? Stream.succeed<ReadonlyArray<SlotCard>>([])
                   : Stream.zipLatestAll(
                       ...entries.map(entry =>
-                        withLoading(
-                          entry.id,
+                        withFallback(
                           cardTimeout,
+                          { title: entry.id, items: [], actions: [], note: 'Loading…' },
                           entry.content(context).pipe(
                             Stream.mapEffect(content => allowedActions(content, context['memberId'])),
                             Stream.catchCause(cause =>
@@ -215,6 +263,44 @@ export class Contributions extends Context.Service<
                         ).pipe(Stream.map((content): SlotCard => ({ id: entry.id, content }))),
                       ),
                     ),
+              ),
+            ),
+          badges: <R,>(entry: BadgeEntry<R>) =>
+            Effect.gen(function* () {
+              const services = yield* Effect.context<R>()
+              const owner = yield* CurrentExtension
+              yield* badgeEntries.add(
+                `${entry.slot}\u0000${entry.id}`,
+                {
+                  slot: entry.slot,
+                  id: entry.id,
+                  content: context => entry.content(context).pipe(Stream.provideContext(services)),
+                },
+                owner,
+              )
+            }),
+          slotBadges: (slot, context) =>
+            SubscriptionRef.changes(badgeEntries.live).pipe(
+              Stream.map(all => all.filter(entry => entry.slot === slot)),
+              Stream.changesWith((a, b) => a.length === b.length && a.every((entry, index) => entry === b[index])),
+              Stream.switchMap(entries =>
+                entries.length === 0
+                  ? Stream.succeed<ReadonlyArray<SlotBadge>>([])
+                  : Stream.zipLatestAll(
+                      ...entries.map(entry =>
+                        withFallback(
+                          cardTimeout,
+                          [],
+                          entry.content(context).pipe(
+                            Stream.catchCause(cause =>
+                              Stream.fromEffect(
+                                Effect.as(Effect.logWarning(`jellyware: the badges of ${entry.id} failed`, cause), []),
+                              ),
+                            ),
+                          ),
+                        ).pipe(Stream.map(badges => badges.map((badge): SlotBadge => ({ source: entry.id, ...badge })))),
+                      ),
+                    ).pipe(Stream.map(lists => lists.flat())),
               ),
             ),
           command: <R,>(entry: CommandEntry<R>) =>
@@ -237,11 +323,16 @@ export class Contributions extends Context.Service<
                   : Effect.fail(`Only members with the role ${(command.roles ?? []).join(' or ')} may do this.`),
               )
             }),
-          inventory: Effect.sync(() => ({
-            nav: navs.owned().map(({ value, owner }) => ({ entry: value, owner })),
-            slots: slots.owned().map(({ value, owner }) => ({ slot: value.slot, id: value.id, owner })),
-            commands: commands.owned().map(({ value, owner }) => ({ id: value.id, roles: value.roles ?? null, owner })),
-          })),
+          inventory: Effect.sync(inventoryNow),
+          inventoryChanges: Stream.mergeAll(
+            [
+              SubscriptionRef.changes(navs.live).pipe(Stream.as(undefined)),
+              SubscriptionRef.changes(slots.live).pipe(Stream.as(undefined)),
+              SubscriptionRef.changes(badgeEntries.live).pipe(Stream.as(undefined)),
+              SubscriptionRef.changes(commands.live).pipe(Stream.as(undefined)),
+            ],
+            { concurrency: 'unbounded' },
+          ).pipe(Stream.map(inventoryNow), Stream.changesWith(sameInventory)),
         })
       }),
     )
@@ -249,15 +340,17 @@ export class Contributions extends Context.Service<
   static readonly layer: Layer.Layer<Contributions> = Contributions.make()
 }
 
-/** A card's content, preceded by a loading card when it has none after
+const sameInventory = (a: Inventory, b: Inventory) => JSON.stringify(a) === JSON.stringify(b)
+
+/** A stream preceded by `fallback` when it has emitted nothing after
  *  `timeout`. */
-const withLoading = (id: string, timeout: Duration.Input, content: Stream.Stream<SlotContent>) =>
+const withFallback = <A,>(timeout: Duration.Input, fallback: A, content: Stream.Stream<A>) =>
   Stream.unwrap(
     Effect.gen(function* () {
       const arrived = yield* Deferred.make<void>()
       const loading = Stream.fromEffect(Effect.sleep(timeout)).pipe(
         Stream.filterEffect(() => Effect.map(Deferred.isDone(arrived), done => !done)),
-        Stream.map((): SlotContent => ({ title: id, items: [], actions: [], note: 'Loading…' })),
+        Stream.as(fallback),
       )
       return Stream.merge(content.pipe(Stream.tap(() => Deferred.succeed(arrived, undefined))), loading)
     }),

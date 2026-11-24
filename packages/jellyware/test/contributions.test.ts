@@ -2,7 +2,7 @@ import { assert, describe, it } from '@effect/vitest'
 import { Context, Effect, Exit, Fiber, Scope, Stream } from 'effect'
 import { TestClock } from 'effect/testing'
 
-import { Contributions, type SlotCard, type SlotContent } from '../src/contributions'
+import { Contributions, CurrentExtension, type SlotCard, type SlotContent } from '../src/contributions'
 
 /* Slots and commands: cards per context, failures contained, entries owned
    by the scope that added them. */
@@ -144,6 +144,57 @@ describe('contributions: slots and commands', () => {
       yield* contributions.command({ id: 'close', roles: ['admin'], run: () => Effect.succeed('Closed') }).pipe(Scope.provide(scope))
       assert.include(yield* Effect.flip(contributions.run('close', { args: null, memberId: 'ada' })), 'role admin')
       yield* Scope.close(scope, Exit.void)
+    }).pipe(Effect.provide(Contributions.layer)),
+  )
+
+  it.effect('merges the badges of every entry, leaves out a failing one, and drops them with their scope', () =>
+    Effect.gen(function* () {
+      const contributions = yield* Contributions
+      const scope = yield* Scope.make()
+      yield* contributions
+        .badges({
+          slot: 'issues.badges',
+          id: 'stale',
+          content: context => Stream.succeed([{ target: 'iss_1', label: `Stale in ${context['scope']}`, tone: 'warning' as const }]),
+        })
+        .pipe(Effect.provideService(CurrentExtension, 'stale'), Scope.provide(scope))
+      yield* contributions.badges({ slot: 'issues.badges', id: 'broken', content: () => Stream.die('boom') }).pipe(Scope.provide(scope))
+
+      const badges = yield* Stream.runHead(contributions.slotBadges('issues.badges', { scope: 'ENG' }))
+      assert.deepStrictEqual(badges._tag === 'Some' ? badges.value : null, [
+        { source: 'stale', target: 'iss_1', label: 'Stale in ENG', tone: 'warning' },
+      ])
+      const inventory = yield* contributions.inventory
+      assert.deepStrictEqual(inventory.badges, [
+        { slot: 'issues.badges', id: 'stale', owner: 'stale' },
+        { slot: 'issues.badges', id: 'broken', owner: null },
+      ])
+
+      yield* Scope.close(scope, Exit.void)
+      const after = yield* Stream.runHead(contributions.slotBadges('issues.badges', { scope: 'ENG' }))
+      assert.deepStrictEqual(after._tag === 'Some' ? after.value : null, [])
+      assert.deepStrictEqual((yield* contributions.inventory).badges, [])
+    }).pipe(Effect.provide(Contributions.layer)),
+  )
+
+  it.live('reports the inventory again when an entry comes or goes', () =>
+    Effect.gen(function* () {
+      const contributions = yield* Contributions
+      const scope = yield* Scope.make()
+      const fiber = yield* contributions.inventoryChanges.pipe(
+        Stream.map(inventory => inventory.nav.map(nav => `${nav.entry.id}:${nav.owner}`)),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      )
+      // Real time: the feed subscribes to four refs before anything changes.
+      yield* Effect.sleep('50 millis')
+      yield* contributions
+        .nav({ id: 'standup', label: 'Stand-up', href: '/standup', icon: 'coffee' })
+        .pipe(Effect.provideService(CurrentExtension, 'standup'), Scope.provide(scope))
+      yield* Effect.sleep('50 millis')
+      yield* Scope.close(scope, Exit.void)
+      assert.deepStrictEqual(yield* Fiber.join(fiber), [[], ['standup:standup'], []])
     }).pipe(Effect.provide(Contributions.layer)),
   )
 })

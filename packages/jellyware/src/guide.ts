@@ -79,13 +79,13 @@ export const renderGuide = (input: GuideInput): string => {
     '',
   ]
   for (const slot of input.slots) {
-    const cards = input.inventory.slots.filter(card => card.slot === slot.name)
+    const cards = [...input.inventory.slots, ...input.inventory.badges].filter(card => card.slot === slot.name)
     lines.push(
       `- ${code(slot.name)}, ${slot.where}. ${slot.how}`,
-      `  Cards now: ${cards.length === 0 ? 'none' : cards.map(card => `${code(card.id)} (${from(card.owner)})`).join(', ')}.`,
+      `  In it now: ${cards.length === 0 ? 'nothing' : cards.map(card => `${code(card.id)} (${from(card.owner)})`).join(', ')}.`,
     )
   }
-  const unknown = input.inventory.slots.filter(card => !input.slots.some(slot => slot.name === card.slot))
+  const unknown = [...input.inventory.slots, ...input.inventory.badges].filter(card => !input.slots.some(slot => slot.name === card.slot))
   for (const card of unknown) lines.push(`- ${code(card.slot)}: card ${code(card.id)} (${from(card.owner)}); no page of the app shows this slot.`)
   lines.push('', '## Commands', '')
   lines.push(
@@ -120,6 +120,7 @@ export const renderGuide = (input: GuideInput): string => {
       ...input.pages.filter(page => page.owner === extension.id).map(page => `page ${code(page.name)} at ${page.paths.map(code).join(', ')}`),
       ...input.inventory.nav.filter(nav => nav.owner === extension.id).map(nav => `sidebar entry ${code(nav.entry.id)}`),
       ...input.inventory.slots.filter(card => card.owner === extension.id).map(card => `card ${code(card.id)} in ${code(card.slot)}`),
+      ...input.inventory.badges.filter(entry => entry.owner === extension.id).map(entry => `badges ${code(entry.id)} in ${code(entry.slot)}`),
       ...input.inventory.commands.filter(command => command.owner === extension.id).map(command => `command ${code(command.id)}`),
     ]
     lines.push(`- Adds: ${adds.length === 0 ? (extension.state === 'active' ? 'nothing the app lists' : 'nothing while it does not run') : adds.join('; ')}.`)

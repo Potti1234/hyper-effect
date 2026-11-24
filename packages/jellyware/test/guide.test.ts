@@ -98,7 +98,7 @@ describe('guide', () => {
         '- `/login` (the app)',
         '- `/related`: page `related` (`related/`)',
         "- `issue.sidebar`, under an issue's properties. Use `issueSidebar`.",
-        '  Cards now: `related` (`related/`).',
+        '  In it now: `related` (`related/`).',
         '- `related.close` (`related/`): only `admin`',
         '- `app.archive` (the app): every member who sees its button',
         '- `related`: "Related", icon `link`, links to `/related` (`related/`)',
