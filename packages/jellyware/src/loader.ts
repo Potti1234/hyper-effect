@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
   Cause,
+  Clock,
   Context,
   Data,
   Effect,
@@ -18,9 +19,19 @@ import {
   Stream,
   SubscriptionRef,
 } from 'effect'
+import { KeyValueStore } from 'effect/persistence'
 
 import { hashFolder, listFolders } from './files.ts'
 import * as Graft from './graft.ts'
+import {
+  ExtensionSettings,
+  SettingField,
+  SettingSpec,
+  type SettingValue,
+  effectiveValues,
+  makeSettings,
+  parseInput,
+} from './settings.ts'
 
 /* Loads the extensions in a folder, swaps each one when its files change,
    and unloads it when its folder goes.
@@ -41,6 +52,11 @@ import * as Graft from './graft.ts'
       fails to import or to build is unmounted again, and the old one keeps
       running.
 
+   Settings work the same way: `configure` stores new values and loads the
+   extension again with them. When the new version does not run, the old
+   one keeps running and the old values are stored again; the change is
+   recorded as reverted. Applied changes can be undone, newest first.
+
    Old generations stay in Node's module cache until the process restarts. */
 
 export const Manifest = S.Struct({
@@ -51,6 +67,8 @@ export const Manifest = S.Struct({
   /** The entry module, relative to the folder. */
   entry: S.String,
   description: S.optional(S.String),
+  /** What an administrator can change while the app runs. */
+  settings: S.optional(S.Record(S.String, SettingSpec)),
 })
 export type Manifest = typeof Manifest.Type
 
@@ -64,8 +82,26 @@ export const ExtensionStatus = S.Struct({
   /** The generation serving now; null while no version runs. */
   running: S.NullOr(S.Number),
   error: S.NullOr(S.String),
+  /** The declared settings with the values in effect. */
+  settings: S.Array(SettingField),
 })
 export type ExtensionStatus = typeof ExtensionStatus.Type
+
+const Values = S.Record(S.String, S.Union([S.String, S.Number, S.Boolean]))
+
+export const SettingsChange = S.Struct({
+  id: S.String,
+  extension: S.String,
+  author: S.String,
+  at: S.Number,
+  before: Values,
+  after: Values,
+  /** Applied; reverted because the extension did not run with it; or
+   *  undone later. */
+  state: S.Literals(['applied', 'reverted', 'undone']),
+  error: S.NullOr(S.String),
+})
+export type SettingsChange = typeof SettingsChange.Type
 
 export class Extensions extends Context.Service<
   Extensions,
@@ -77,6 +113,18 @@ export class Extensions extends Context.Service<
      *  or unloads it when its folder or manifest is gone. Files unchanged
      *  since the last attempt are not loaded again. */
     readonly reload: (id: string) => Effect.Effect<void>
+    /** Changes settings of an extension (the form's text per key) and loads
+     *  it with them; fails with a line for the member when a value does not
+     *  fit. Answers with the recorded change, `reverted` when the extension
+     *  did not run with the new values. */
+    readonly configure: (id: string, input: Readonly<Record<string, string>>, author: string) => Effect.Effect<SettingsChange, string>
+    /** Puts back the values before an applied change; only the newest
+     *  applied change of an extension, and only while its values are still
+     *  the ones it set. */
+    readonly undoSettings: (changeId: string) => Effect.Effect<void, string>
+    /** Settings changes, newest first, now and after every change. */
+    readonly settingsChanges: Stream.Stream<ReadonlyArray<SettingsChange>>
+    readonly currentSettingsChanges: Effect.Effect<ReadonlyArray<SettingsChange>>
   }
 >()('@hyper-effect/jellyware/Extensions') {}
 
@@ -128,7 +176,7 @@ export type Options<Requires extends ReadonlyArray<Graft.Requirement>> = Readonl
  *  the life of the layer. */
 export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
   options: Options<Requires>,
-): Layer.Layer<Extensions, never, Graft.Graph> =>
+): Layer.Layer<Extensions, never, Graft.Graph | KeyValueStore.KeyValueStore> =>
   Layer.effect(
     Extensions,
     Effect.gen(function* () {
@@ -144,11 +192,26 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
       const lock = yield* Semaphore.make(1)
       // Only the graph: the layer's whole context would also carry its Scope.
       const graph = yield* Graft.Graph
+      const store = yield* KeyValueStore.KeyValueStore
+      const stored = KeyValueStore.prefix(store, 'jellyware/settings/')
 
       /** The narrowing an extension's own typecheck stands behind: its
-       *  default export is declared against the app's host services. */
-      const isExtensionLayer = (value: unknown): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires>> =>
-        Layer.isLayer(value)
+       *  default export is declared against the app's host services and its
+       *  settings. */
+      const isExtensionLayer = (
+        value: unknown,
+      ): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires> | ExtensionSettings> => Layer.isLayer(value)
+
+      const decodeValues = S.decodeUnknownEffect(S.fromJsonString(Values))
+      const readValues = (id: string) =>
+        stored.get(id).pipe(
+          Effect.flatMap(text => (text === undefined ? Effect.succeed({}) : decodeValues(text))),
+          Effect.orElseSucceed((): Readonly<Record<string, SettingValue>> => ({})),
+        )
+      const writeValues = (id: string, values: Readonly<Record<string, SettingValue>>) =>
+        stored.set(id, JSON.stringify(values)).pipe(Effect.orDie)
+      const fieldsOf = (specs: Readonly<Record<string, SettingSpec>>, values: Readonly<Record<string, SettingValue>>) =>
+        Object.entries(specs).map(([key, spec]): SettingField => ({ key, spec, value: values[key] ?? spec.default }))
 
       const setStatus = (status: ExtensionStatus) =>
         SubscriptionRef.update(statuses, list =>
@@ -182,9 +245,12 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           const manifest = yield* decodeManifest(text).pipe(
             Effect.mapError(error => new LoadError({ message: `extension.json: ${error.message}` })),
           )
-          const base = { id, name: manifest.name, version: manifest.version }
+          const specs = manifest.settings ?? {}
+          const values = effectiveValues(specs, yield* readValues(id))
+          const base = { id, name: manifest.name, version: manifest.version, settings: fieldsOf(specs, values) }
           const runningNow = () => running.get(id)?.generation ?? null
-          const hash = (yield* Effect.promise(() => hashFolder(folder))) ?? ''
+          // Files and settings: either changing loads the extension again.
+          const hash = `${(yield* Effect.promise(() => hashFolder(folder))) ?? ''}:${JSON.stringify(values)}`
           if (attempted.get(id) === hash) return
           attempted.set(id, hash)
           if (manifest.id !== id) {
@@ -211,7 +277,8 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           }
 
           const scope = yield* Scope.fork(lifetime)
-          const mounted = yield* Graft.mount(extension, { name: id, requires: options.requires }).pipe(
+          const configured = extension.pipe(Layer.provide(Layer.succeed(ExtensionSettings, makeSettings(values))))
+          const mounted = yield* Graft.mount(configured, { name: id, requires: options.requires }).pipe(
             Scope.provide(scope),
           )
           const settled = yield* Effect.exit(mounted.settled)
@@ -257,6 +324,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
                 state: 'failed',
                 running: running.get(id)?.generation ?? null,
                 error: error.message,
+                settings: known?.settings ?? [],
               }
               return [...list.filter(other => other.id !== id), status].sort((a, b) => a.id.localeCompare(b.id))
             })),
@@ -294,10 +362,106 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
         }).pipe(Effect.forever, Effect.forkScoped)
       }
 
+      // SETTINGS CHANGES
+
+      const decodeHistory = S.decodeUnknownEffect(S.fromJsonString(S.Array(SettingsChange)))
+      const history = yield* SubscriptionRef.make<ReadonlyArray<SettingsChange>>(
+        yield* store.get('jellyware/settings-history').pipe(
+          Effect.flatMap(text => (text === undefined ? Effect.succeed([]) : decodeHistory(text))),
+          Effect.orElseSucceed((): ReadonlyArray<SettingsChange> => []),
+        ),
+      )
+      const record = (change: SettingsChange) =>
+        Effect.gen(function* () {
+          // A new change goes first; an undone one keeps its place.
+          const all = yield* SubscriptionRef.get(history)
+          const next = (
+            all.some(other => other.id === change.id)
+              ? all.map(other => (other.id === change.id ? change : other))
+              : [change, ...all]
+          ).slice(0, 100)
+          yield* SubscriptionRef.set(history, next)
+          yield* store.set('jellyware/settings-history', JSON.stringify(next)).pipe(Effect.orDie)
+        })
+      const settingsLock = yield* Semaphore.make(1)
+      const loaded = (id: string) => load(id).pipe(Effect.provideService(Graft.Graph, graph))
+      const errorOf = (id: string) =>
+        Effect.map(SubscriptionRef.get(statuses), list => list.find(status => status.id === id)?.error ?? 'The extension did not load.')
+
+      /** Stores `values`, loads the extension with them, and tells whether a
+       *  new version runs; when not, the previous values are stored and
+       *  loaded again. */
+      const apply = (id: string, values: Readonly<Record<string, SettingValue>>, previous: Readonly<Record<string, SettingValue>>) =>
+        Effect.gen(function* () {
+          const before = running.get(id)?.generation ?? null
+          yield* writeValues(id, values)
+          yield* loaded(id)
+          const after = running.get(id)?.generation ?? null
+          if (after !== null && after !== before) return null
+          const error = yield* errorOf(id)
+          yield* writeValues(id, previous)
+          yield* loaded(id)
+          yield* Effect.logWarning(`jellyware: ${id}: settings put back, the extension did not run with them`)
+          return error
+        })
+
+      const specsOf = (id: string) =>
+        Effect.gen(function* () {
+          const text = yield* Effect.promise(() => readFile(join(directory, id, 'extension.json'), 'utf8').catch(() => null))
+          if (text === null) return yield* Effect.fail(`There is no extension ${id}.`)
+          const manifest = yield* decodeManifest(text).pipe(Effect.mapError(() => `The manifest of ${id} is not valid.`))
+          return manifest.settings ?? {}
+        })
+
       return Extensions.of({
         changes: SubscriptionRef.changes(statuses),
         current: SubscriptionRef.get(statuses),
-        reload: id => load(id).pipe(Effect.provideService(Graft.Graph, graph)),
+        reload: loaded,
+        configure: (id, input, author) =>
+          settingsLock.withPermits(1)(
+            Effect.gen(function* () {
+              const specs = yield* specsOf(id)
+              const parsed = parseInput(specs, input)
+              if ('errors' in parsed) return yield* Effect.fail(parsed.errors.join(' '))
+              const before = effectiveValues(specs, yield* readValues(id))
+              const after = { ...before, ...parsed.values }
+              if (JSON.stringify(after) === JSON.stringify(before)) return yield* Effect.fail('Nothing changed.')
+              const error = yield* apply(id, after, before)
+              const change: SettingsChange = {
+                id: `${yield* Clock.currentTimeMillis}-${Math.random().toString(36).slice(2, 6)}`,
+                extension: id,
+                author,
+                at: yield* Clock.currentTimeMillis,
+                before,
+                after,
+                state: error === null ? 'applied' : 'reverted',
+                error,
+              }
+              yield* record(change)
+              return change
+            }),
+          ),
+        undoSettings: changeId =>
+          settingsLock.withPermits(1)(
+            Effect.gen(function* () {
+              const all = yield* SubscriptionRef.get(history)
+              const change = all.find(other => other.id === changeId)
+              if (change === undefined) return yield* Effect.fail('There is no such change.')
+              if (change.state !== 'applied') return yield* Effect.fail(`Only an applied change can be undone; this one is ${change.state}.`)
+              const newer = all.find(other => other.extension === change.extension && other.state === 'applied' && other.at > change.at)
+              if (newer !== undefined) return yield* Effect.fail('Undo the newer change of this extension first.')
+              const specs = yield* specsOf(change.extension)
+              const now = effectiveValues(specs, yield* readValues(change.extension))
+              if (JSON.stringify(now) !== JSON.stringify(effectiveValues(specs, change.after))) {
+                return yield* Effect.fail('The settings changed since; undo that first.')
+              }
+              const error = yield* apply(change.extension, effectiveValues(specs, change.before), now)
+              if (error !== null) return yield* Effect.fail(`The extension did not run with the earlier settings: ${error}`)
+              yield* record({ ...change, state: 'undone' })
+            }),
+          ),
+        settingsChanges: SubscriptionRef.changes(history),
+        currentSettingsChanges: SubscriptionRef.get(history),
       })
     }),
   )

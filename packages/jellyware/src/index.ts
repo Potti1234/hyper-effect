@@ -33,4 +33,5 @@ export {
   SlotItem,
 } from './contributions.ts'
 export { graph, type Graph, type MountState, type Provided, type Requirement } from './graft.ts'
-export { ExtensionStatus, Extensions, Manifest, layer, type Options } from './loader.ts'
+export { ExtensionStatus, Extensions, Manifest, SettingsChange, layer, type Options } from './loader.ts'
+export { ExtensionSettings, SettingField, SettingSpec, type SettingValue } from './settings.ts'

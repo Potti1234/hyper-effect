@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import { afterAll, assert, describe, it } from '@effect/vitest'
 import { type Context, Effect, Layer } from 'effect'
+import { KeyValueStore } from 'effect/persistence'
 
 import { Contributions } from '../src/contributions'
 import { graph } from '../src/graft'
@@ -49,6 +50,7 @@ write('typo', navExtension('typo', 'Typo'), { id: 'other' })
 const app = layer({ directory, requires: [Contributions] }).pipe(
   Layer.provideMerge(graph),
   Layer.provideMerge(Contributions.layer),
+  Layer.provideMerge(KeyValueStore.layerMemory),
 )
 
 const run = <A, E>(effect: Effect.Effect<A, E, Extensions | Contributions>) =>

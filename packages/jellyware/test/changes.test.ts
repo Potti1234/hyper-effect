@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import { afterAll, assert, describe, it } from '@effect/vitest'
 import { type Context, Effect, Layer } from 'effect'
+import { KeyValueStore } from 'effect/persistence'
 
 import { AgentError, Changes, type Run, type Task, layer as changesLayer } from '../src/changes'
 import { Contributions } from '../src/contributions'
@@ -79,6 +80,7 @@ const app = changesLayer({
   Layer.provideMerge(loaderLayer({ directory: live, requires: [Contributions] })),
   Layer.provideMerge(graph),
   Layer.provideMerge(Contributions.layer),
+  Layer.provideMerge(KeyValueStore.layerMemory),
 )
 
 let context: Context.Context<Changes | Contributions>
