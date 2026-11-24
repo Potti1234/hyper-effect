@@ -2,14 +2,15 @@ import { assert, describe, it } from '@effect/vitest'
 import { Story } from 'foldkit/test'
 
 import { openPage, openStream, postEvent, readUntil, serve, token } from '@hyper-effect/core/testing'
-import { Contributions } from '@hyper-effect/jellyware'
-import { Layer } from 'effect'
+import { Contributions, type SlotCard } from '@hyper-effect/jellyware'
+import { Effect, Layer, Stream } from 'effect'
 
 import { USER_COOKIE_NAME, cookieValue } from '@/app/auth'
 import { type Issue, emptyQuery, queryFromUrl, searchForQuery } from '@/app/domain'
 import * as Issues from '@/app/issues/page'
 import { SEED_MEMBERS, seed } from '@/app/seed'
 import * as Store from '@/app/store'
+import * as Picker from '@/app/view/picker'
 
 /* The issue list: update as a pure function (Foldkit's Story, Commands
    resolved by hand), then the page over HTTP as a browser drives it. */
@@ -28,6 +29,7 @@ const model = (overrides: Partial<Issues.Model> = {}): Issues.Model => ({
     members: SEED_MEMBERS,
     issues: seeded.issues,
     isCreating: false,
+    badges: [],
   }).model,
   ...overrides,
 })
@@ -231,6 +233,71 @@ describe('issues: update (Story)', () => {
   })
 })
 
+describe('issues: extensions in the palette and on rows (Story)', () => {
+  const eng4 = issue('ENG-4')
+  const cards: ReadonlyArray<SlotCard> = [
+    {
+      id: 'related',
+      content: {
+        title: 'ENG-4',
+        items: [],
+        actions: [{ label: 'Mark ENG-4 urgent', command: 'related.mark-urgent', args: { issueId: eng4.id } }],
+        note: null,
+      },
+    },
+    {
+      id: 'standup',
+      content: {
+        title: 'Navigation',
+        items: [
+          { label: 'Open Stand-up', detail: null, href: '/standup' },
+          { label: 'Elsewhere', detail: null, href: 'https://example.com' },
+        ],
+        actions: [],
+        note: null,
+      },
+    },
+  ]
+  const open = model({ selectedId: eng4.id, picker: Picker.open('command', 'palette', [], null), paletteCards: cards })
+
+  it('lists extension entries with the selected issue and in Navigation, and only app paths', () => {
+    const items = Issues.pickerItems(open, open.picker!)
+    const groups = items.map(item => item.group)
+    const urgent = items.findIndex(item => item.value === 'ext:0:related')
+    assert.strictEqual(items[urgent]?.group, 'ENG-4')
+    // Next to the issue's own entries, so the picker shows one group.
+    assert.strictEqual(groups[urgent - 1], 'ENG-4')
+    const standup = items.findIndex(item => item.value === 'extgo:0:standup')
+    assert.strictEqual(groups[standup - 1], 'Navigation')
+    assert.isFalse(items.some(item => item.value === 'extgo:1:standup'))
+  })
+
+  it('runs an extension entry for the member, opens its link, and refuses made-up ones', () => {
+    Story.story(
+      Issues.updateModel,
+      Story.given(open),
+      Story.message(Issues.Message.ClickedPickerItem({ value: 'ext:3:related' })),
+      Story.message(Issues.Message.ClickedPickerItem({ value: 'extgo:1:standup' })),
+      Story.model(next => assert.isNotNull(next.picker)),
+      Story.message(Issues.Message.ClickedPickerItem({ value: 'ext:0:related' })),
+      Command.expectExact(Issues.RunExtensionAction({ command: 'related.mark-urgent', args: { issueId: eng4.id }, memberId: 'ada' })),
+      Command.resolve(Issues.RunExtensionAction, Issues.Message.CompletedExtensionAction({ message: 'Marked ENG-4 urgent.' })),
+      Story.model(next => {
+        assert.isNull(next.picker)
+        assert.strictEqual(next.toast?.text, 'Marked ENG-4 urgent.')
+      }),
+      Command.resolve(Issues.ExpireToast, Issues.Message.ExpiredToast({ seq: 1 })),
+    )
+    Story.story(
+      Issues.updateModel,
+      Story.given(open),
+      Story.message(Issues.Message.ClickedPickerItem({ value: 'extgo:0:standup' })),
+      Command.expectExact(Issues.LoadUrl({ url: '/standup' })),
+      Command.resolve(Issues.LoadUrl, Issues.Message.CompletedBrowserAction()),
+    )
+  })
+})
+
 describe('domain: the query in the URL', () => {
   it('round-trips and ignores what it does not know', () => {
     const query = queryFromUrl(new URL('http://x/team/ENG?status=todo,in_progress,bogus&priority=1,9&label=bug,nope&q=crash&view=board'))
@@ -253,6 +320,33 @@ describe('issues: the page over HTTP', () => {
       assert.strictEqual(response.headers.get('location'), '/login?next=%2Fteam%2FENG')
       const unknown = await server.handler(new Request('http://localhost/team/XYZ', { headers: { cookie } }))
       assert.strictEqual(unknown.status, 404)
+    } finally {
+      await server.dispose()
+    }
+  })
+
+  it('shows the badges extensions give issues, on rows and board cards', async () => {
+    const badges = Layer.effectDiscard(
+      Contributions.use(contributions =>
+        contributions.badges({
+          slot: 'issues.badges',
+          id: 'stale',
+          // A day later the badge changes: the open page follows.
+          content: () =>
+            Stream.concat(
+              Stream.succeed([{ target: issue('ENG-4').id, label: 'Stale 12d', tone: 'warning' as const }]),
+              Stream.fromEffect(Effect.as(Effect.sleep('300 millis'), [{ target: issue('ENG-4').id, label: 'Stale 13d', tone: 'warning' as const }])),
+            ),
+        }),
+      ),
+    ).pipe(Layer.provideMerge(Contributions.layer))
+    const server = serve(Issues.program, { path: '/team/:team', paths: Issues.paths }, undefined, Layer.merge(Store.layer, badges))
+    try {
+      for (const path of ['/team/ENG', '/team/ENG?view=board']) {
+        const page = await openPage(server.handler, path, cookie)
+        assert.match(page.html, /id="row-ENG-4"[\s\S]*?data-badge="stale"[^>]*>Stale \d+d</)
+        assert.include(await readUntil(await openStream(server.handler, page), 'Stale 13d'), 'Stale 13d')
+      }
     } finally {
       await server.dispose()
     }

@@ -30,7 +30,7 @@ export const importRules: ImportRules = {
     },
     {
       module: '@hyper-effect/jellyware',
-      names: ['Contributions', 'ExtensionSettings', 'NavEntry', 'SlotAction', 'SlotCard', 'SlotContent', 'SlotItem'],
+      names: ['Badge', 'BadgeTone', 'Contributions', 'ExtensionSettings', 'NavEntry', 'SlotAction', 'SlotCard', 'SlotContent', 'SlotItem'],
     },
     '=#app/extensions',
     '=#app/domain',

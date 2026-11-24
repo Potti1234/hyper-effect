@@ -5,7 +5,7 @@ import { defineMessageUnion } from 'foldkit/message'
 import * as Navigation from 'foldkit/navigation'
 
 import { PageNotFound, type PageRequest, type Program, keyBindings, memoizeLast, region } from '@hyper-effect/core'
-import { Contributions, NavEntry } from '@hyper-effect/jellyware'
+import { type BadgeTone, Contributions, NavEntry, SlotBadge, SlotCard } from '@hyper-effect/jellyware'
 
 import * as Icon from '@/lib/icon'
 import { cn } from '@/lib/utils'
@@ -16,6 +16,7 @@ import { input } from '@/ui/input'
 import { renderTextarea } from '@/lib/textarea'
 
 import { requireUser } from '../auth'
+import { ISSUES_BADGES, ISSUES_PALETTE } from '../extensions'
 import {
   BOARD_ORDER,
   GROUP_ORDER,
@@ -60,7 +61,10 @@ import { type NavCounts, VIEWS, hint, sidebar } from '../view/shell'
    - the shared list arrives live through a Subscription on the workspace;
    - filters, search and the layout live in the Model and in the address bar;
    - the keyboard island reports shortcuts (c, j/k, Enter, s/p/a/l, /, Ctrl+K);
-   - the picker and the new-issue dialog are part of the Model and the view. */
+   - the picker and the new-issue dialog are part of the Model and the view;
+   - extensions add entries to the command palette (slot `issues.palette`,
+     read only while it is open) and badges to rows and board cards (slot
+     `issues.badges`). */
 
 // MODEL
 
@@ -109,6 +113,10 @@ export const Model = S.Struct({
   seq: S.Number,
   /** The keyboard shortcuts dialog (`?`), a crease dialog. */
   help: Dialog.Model,
+  /** Entries extensions add to the command palette while it is open. */
+  paletteCards: S.Array(SlotCard),
+  /** Badges extensions show on issues. */
+  badges: S.Array(SlotBadge),
 })
 export type Model = typeof Model.Type
 
@@ -156,6 +164,9 @@ export const Message = defineMessageUnion({
   FailedChange: { reason: S.String },
   ExpiredToast: { seq: S.Number },
   CompletedBrowserAction: {},
+  GotPaletteCards: { cards: S.Array(SlotCard) },
+  GotBadges: { badges: S.Array(SlotBadge) },
+  CompletedExtensionAction: { message: S.String },
 })
 export type Message = typeof Message.Type
 
@@ -223,6 +234,18 @@ export const ExpireToast = Command.define('ExpireToast', {
   execute: ({ seq }) => Effect.sleep(Duration.seconds(6)).pipe(Effect.as(Message.ExpiredToast({ seq }))),
 })
 
+/** Runs the command of an extension's palette entry for the member; its
+ *  answer, or why it failed, shows as a toast. */
+export const RunExtensionAction = Command.define('RunExtensionAction', {
+  args: { command: S.String, args: S.Json, memberId: S.String },
+  messages: [Message.CompletedExtensionAction],
+  execute: ({ command, args, memberId }) =>
+    Contributions.use(contributions => contributions.run(command, { args, memberId })).pipe(
+      Effect.catch(message => Effect.succeed(message)),
+      Effect.map(message => Message.CompletedExtensionAction({ message })),
+    ),
+})
+
 /* Browser effects, forwarded to the page (see `clientCommands`). In a
    browser-run Foldkit app they would run as written. */
 export const ReplaceUrl = Command.define('ReplaceUrl', {
@@ -261,6 +284,7 @@ export type Flags = Readonly<{
   issues: ReadonlyArray<Issue>
   /** `?new=1`: open the new-issue dialog at once (the `c` key on other pages). */
   isCreating: boolean
+  badges: ReadonlyArray<SlotBadge>
 }>
 
 const emptyDraft = (model: Pick<Model, 'scope' | 'me'>, status: Status | null): Draft => ({
@@ -275,7 +299,7 @@ const emptyDraft = (model: Pick<Model, 'scope' | 'me'>, status: Status | null): 
   isSaving: false,
 })
 
-export const init = (flags: Flags): Update.Return<Model, Message, Workspace> => {
+export const init = (flags: Flags): Update.Return<Model, Message, Workspace | Contributions> => {
   const model: Model = {
     me: flags.me,
     extensionNav: flags.extensionNav,
@@ -293,13 +317,15 @@ export const init = (flags: Flags): Update.Return<Model, Message, Workspace> => 
     dropTarget: null,
     seq: 0,
     help: Dialog.init({ id: 'shortcuts-help' }),
+    paletteCards: [],
+    badges: flags.badges,
   }
   return flags.isCreating ? openDraft(model, null) : { model }
 }
 
 // UPDATE
 
-type UpdateReturn = Update.Return<Model, Message, Workspace>
+type UpdateReturn = Update.Return<Model, Message, Workspace | Contributions>
 
 export const basePath = (scope: Scope): string =>
   scope._tag === 'Team' ? `/team/${scope.team}` : scope._tag === 'Mine' ? '/my-issues' : '/issues'
@@ -407,6 +433,9 @@ const commandItems = (model: Model): ReadonlyArray<Picker.PickerItem> => {
           { value: 'labels', label: `Change labels of ${selected.identifier}…`, group: selected.identifier, shortcut: 'L' },
           { value: 'open', label: `Open ${selected.identifier}`, group: selected.identifier, keywords: selected.title },
         ]),
+    // Extensions' entries titled with the selected issue's identifier join
+    // its group (the picker groups neighbours).
+    ...extensionItems(model, card => selected !== undefined && card.content.title === selected.identifier),
     { value: 'filter', label: 'Filter…', group: 'View', keywords: 'status priority label assignee' },
     {
       value: 'layout',
@@ -420,12 +449,36 @@ const commandItems = (model: Model): ReadonlyArray<Picker.PickerItem> => {
     { value: 'go:/issues', label: 'Go to All issues', group: 'Navigation' },
     ...TEAMS.map(team => ({ value: `go:/team/${team.key}`, label: `Go to ${team.name}`, group: 'Navigation', shortcut: `G ${team.key.charAt(0)}` })),
     ...VIEWS.map(view => ({ value: `go:${view.href}`, label: `Open view: ${view.label}`, group: 'Navigation' })),
+    // The other extensions' entries: those titled Navigation join the group above.
+    ...extensionItems(model, card => card.content.title === 'Navigation'),
+    ...extensionItems(model, card => card.content.title !== 'Navigation' && (selected === undefined || card.content.title !== selected.identifier)),
     ...model.issues
       .filter(inScope(model))
       .slice()
       .sort(compareIssues)
       .map(issue => ({ value: `issue:${issue.identifier}`, label: `${issue.identifier} ${issue.title}`, group: 'Issues in this view', keywords: statusLabel[issue.status] })),
   ]
+}
+
+/** The palette entries of the extensions' cards that `include` picks. */
+const extensionItems = (model: Model, include: (card: SlotCard) => boolean): ReadonlyArray<Picker.PickerItem> =>
+  model.paletteCards.filter(include).flatMap(card => [
+    ...card.content.actions.map((action, index) => ({ value: `ext:${index}:${card.id}`, label: action.label, group: card.content.title })),
+    ...card.content.items.flatMap((item, index) =>
+      item.href !== null && isAppPath(item.href)
+        ? [{ value: `extgo:${index}:${card.id}`, label: item.label, group: card.content.title, keywords: item.detail ?? '' }]
+        : [],
+    ),
+  ])
+
+/** A path of this app (not another site). */
+const isAppPath = (href: string) => href.startsWith('/') && !href.startsWith('//') && !href.startsWith('/\\')
+
+/** The card and position named by a palette value `ext:<index>:<card id>`. */
+const extensionEntry = (model: Model, value: string) => {
+  const [, index = '', ...rest] = value.split(':')
+  const card = model.paletteCards.find(candidate => candidate.id === rest.join(':'))
+  return card === undefined ? undefined : { card, index: Number(index) }
 }
 
 const toggle = <A>(values: ReadonlyArray<A>, value: A): ReadonlyArray<A> =>
@@ -501,6 +554,19 @@ const runCommand = (model: Model, value: string): UpdateReturn => {
   if (value.startsWith('issue:')) {
     const issue = model.issues.find(candidate => candidate.identifier === value.slice(6))
     return issue === undefined ? { model } : { model: closed, commands: [LoadUrl({ url: `/issue/${issue.identifier}` })] }
+  }
+  // An extension's entry, offered by the palette (checked in `choose`).
+  if (value.startsWith('ext:')) {
+    const found = extensionEntry(model, value)
+    const action = found?.card.content.actions[found.index]
+    return action === undefined
+      ? { model }
+      : { model: closed, commands: [RunExtensionAction({ command: action.command, args: action.args, memberId: model.me.id })] }
+  }
+  if (value.startsWith('extgo:')) {
+    const found = extensionEntry(model, value)
+    const href = found?.card.content.items[found.index]?.href
+    return href === undefined || href === null || !isAppPath(href) ? { model } : { model: closed, commands: [LoadUrl({ url: href })] }
   }
   switch (value) {
     case 'create':
@@ -723,6 +789,9 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
       FailedChange: ({ reason }) => showToast(model, reason, null),
       ExpiredToast: ({ seq }) => (model.toast?.seq === seq ? { model: { ...model, toast: null } } : { model }),
       CompletedBrowserAction: () => ({ model }),
+      GotPaletteCards: ({ cards }) => ({ model: { ...model, paletteCards: cards } }),
+      GotBadges: ({ badges }) => ({ model: { ...model, badges } }),
+      CompletedExtensionAction: ({ message }) => showToast(model, message, null),
     }),
   )
 
@@ -744,6 +813,45 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Contr
       dependenciesToStream: () =>
         Stream.unwrap(
           Contributions.use(contributions => Effect.succeed(contributions.navChanges.pipe(Stream.map(gotExtensionNav)))),
+        ),
+    },
+  ),
+  // Read only while the palette is open, for the selected issue then.
+  paletteCards: entry(
+    { open: S.Boolean, memberId: S.String, issueId: S.String, identifier: S.String },
+    {
+      modelToDependencies: model => {
+        const selected = model.issues.find(issue => issue.id === model.selectedId)
+        return {
+          open: model.picker?.target === 'palette',
+          memberId: model.me.id,
+          issueId: selected?.id ?? '',
+          identifier: selected?.identifier ?? '',
+        }
+      },
+      dependenciesToStream: ({ open, memberId, issueId, identifier }) =>
+        open
+          ? Stream.unwrap(
+              Contributions.use(contributions =>
+                Effect.succeed(
+                  contributions
+                    .slotCards(ISSUES_PALETTE, { memberId, issueId, identifier })
+                    .pipe(Stream.map(cards => Message.GotPaletteCards({ cards }))),
+                ),
+              ),
+            )
+          : Stream.succeed(Message.GotPaletteCards({ cards: [] })),
+    },
+  ),
+  badges: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(
+          Contributions.use(contributions =>
+            Effect.succeed(contributions.slotBadges(ISSUES_BADGES, {}).pipe(Stream.map(badges => Message.GotBadges({ badges })))),
+          ),
         ),
     },
   ),
@@ -950,7 +1058,29 @@ const memberOf = (members: ReadonlyArray<Member>, id: string | null): Member | u
   id === null ? undefined : members.find(member => member.id === id)
 
 /** One list row. Shared across sessions: it reads only its deps. */
-const issueRow = (issue: Issue, assignee: Member | undefined, isSelected: boolean, h: HtmlBuilder<Message>): Html =>
+const BADGE_TONE: Readonly<Record<BadgeTone, string>> = {
+  neutral: 'bg-muted text-muted-foreground',
+  info: 'bg-blue-500/10 text-blue-700 dark:text-blue-400',
+  success: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+  warning: 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
+  danger: 'bg-destructive/10 text-destructive',
+}
+
+const badgesOf = (model: Model, issue: Issue): ReadonlyArray<SlotBadge> => model.badges.filter(badge => badge.target === issue.id)
+
+/** Badges extensions show on an issue. */
+const badgeChips = (badges: ReadonlyArray<SlotBadge>, h: HtmlBuilder<Message>): ReadonlyArray<Html> =>
+  badges.map(badge =>
+    h.span(
+      [
+        h.Class(cn('shrink-0 rounded px-1.5 py-px text-[11px] font-medium', BADGE_TONE[badge.tone])),
+        h.DataAttribute('badge', badge.source),
+      ],
+      [badge.label],
+    ),
+  )
+
+const issueRow = (issue: Issue, assignee: Member | undefined, isSelected: boolean, badges: ReadonlyArray<SlotBadge>, h: HtmlBuilder<Message>): Html =>
   h.div(
     [
       h.Id(`row-${issue.identifier}`),
@@ -987,6 +1117,7 @@ const issueRow = (issue: Issue, assignee: Member | undefined, isSelected: boolea
         children: [statusIcon(issue.status, h)],
       }),
       h.span([h.Class(cn('min-w-0 flex-1 truncate font-medium', isClosed(issue.status) && 'text-muted-foreground'))], [issue.title]),
+      ...badgeChips(badges, h),
       h.span([h.Class('hidden shrink-0 items-center gap-1 md:flex')], issue.labelIds.map(id => labelChip(id, h))),
       h.span([h.Class('w-12 shrink-0 text-right text-[12px] text-muted-foreground')], [formatDate(issue.createdAt)]),
       openPickerButton(h, {
@@ -1067,12 +1198,13 @@ const listView = (model: Model, groups: ReadonlyArray<Group>, h: HtmlBuilder<Mes
                   : group.issues.map(issue => {
                       const assignee = memberOf(model.members, issue.assigneeId)
                       const isSelected = issue.id === model.selectedId
+                      const badges = badgesOf(model, issue)
                       return region(h, {
                         id: `row-${issue.identifier}`,
-                        deps: [issue, assignee, isSelected],
+                        deps: [issue, assignee, isSelected, badges],
                         // The same markup for everyone with these deps: rendered once.
                         shared: true,
-                        render: () => issueRow(issue, assignee, isSelected, h),
+                        render: () => issueRow(issue, assignee, isSelected, badges, h),
                       })
                     })),
               ],
@@ -1080,7 +1212,7 @@ const listView = (model: Model, groups: ReadonlyArray<Group>, h: HtmlBuilder<Mes
           }),
   )
 
-const boardCard = (issue: Issue, assignee: Member | undefined, isSelected: boolean, h: HtmlBuilder<Message>): Html =>
+const boardCard = (issue: Issue, assignee: Member | undefined, isSelected: boolean, badges: ReadonlyArray<SlotBadge>, h: HtmlBuilder<Message>): Html =>
   h.div(
     [
       h.Id(`row-${issue.identifier}`),
@@ -1142,6 +1274,7 @@ const boardCard = (issue: Issue, assignee: Member | undefined, isSelected: boole
             children: [priorityIcon(issue.priority, h, 'size-3')],
           }),
           ...issue.labelIds.map(id => labelChip(id, h)),
+          ...badgeChips(badges, h),
         ],
       ),
     ],
@@ -1191,11 +1324,12 @@ const boardView = (model: Model, groups: ReadonlyArray<Group>, h: HtmlBuilder<Me
             group.issues.map(issue => {
               const assignee = memberOf(model.members, issue.assigneeId)
               const isSelected = issue.id === model.selectedId
+              const badges = badgesOf(model, issue)
               return region(h, {
                 id: `row-${issue.identifier}`,
-                deps: ['card', issue, assignee, isSelected],
+                deps: ['card', issue, assignee, isSelected, badges],
                 shared: true,
-                render: () => boardCard(issue, assignee, isSelected, h),
+                render: () => boardCard(issue, assignee, isSelected, badges, h),
               })
             }),
           ),
@@ -1475,7 +1609,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
             region(h, { id: 'filter-bar', deps: [model.query, model.members], render: () => filterBar(model, h) }),
             region(h, {
               id: 'issue-list',
-              deps: [model.query.layout, groups, model.members, model.selectedId, model.collapsed, model.dragging, model.dropTarget, model.query.search, model.query.status, model.query.priority, model.query.assignee, model.query.label],
+              deps: [model.query.layout, groups, model.members, model.selectedId, model.collapsed, model.dragging, model.dropTarget, model.query.search, model.query.status, model.query.priority, model.query.assignee, model.query.label, model.badges],
               render: () => (model.query.layout === 'board' ? boardView(model, groups, h) : listView(model, groups, h)),
             }),
           ],
@@ -1548,6 +1682,12 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace | 
         members: state.members,
         issues: state.issues,
         isCreating: request.url.searchParams.get('new') === '1',
+        // The badges as they are now, so the first render shows them; later
+        // ones arrive through the Subscription.
+        badges: yield* Contributions.use(contributions => Stream.runHead(contributions.slotBadges(ISSUES_BADGES, {}))).pipe(
+          Effect.timeoutOption('300 millis'),
+          Effect.map(found => (found._tag === 'Some' && found.value._tag === 'Some' ? found.value.value : [])),
+        ),
       }
     }),
   init,

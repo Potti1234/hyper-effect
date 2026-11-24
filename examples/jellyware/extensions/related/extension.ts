@@ -3,13 +3,14 @@ import { Effect, Layer, Schema as S, Stream } from 'effect'
 import { Contributions, ExtensionSettings, type SlotContent } from '@hyper-effect/jellyware'
 
 import { type Issue, isClosed } from '#app/domain'
-import { action, extension, issueSidebar } from '#app/extensions'
+import { action, extension, issueSidebar, issuesPalette } from '#app/extensions'
 import { Workspace } from '#app/store'
 
 /* Related issues: a card under each issue's properties (slot
    `issue.sidebar`) with the open issues that share a label with it,
    kept live, and the action "Mark urgent", which runs this extension's
-   command `related.mark-urgent`.
+   command `related.mark-urgent`. The same action is in the issue lists'
+   command palette for the selected issue (slot `issues.palette`).
 
    Settings (extension.json): the card's title, how many issues it shows,
    and whether it offers "Mark urgent". It refuses to show more than 10: a
@@ -57,6 +58,25 @@ export default extension(
       yield* issueSidebar('related', ({ issueId }) =>
         workspace.changes.pipe(
           Stream.map(state => cardFor(issueId, state.issues, options)),
+          Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+        ),
+      )
+
+      // Titled with the identifier: listed with the selected issue's own entries.
+      yield* issuesPalette('related', ({ issueId, identifier }) =>
+        workspace.changes.pipe(
+          Stream.map((state): SlotContent => {
+            const issue = state.issues.find(candidate => candidate.id === issueId)
+            return {
+              title: identifier ?? 'Related',
+              items: [],
+              actions:
+                issue === undefined || issue.priority === 1 || !options.urgentAction
+                  ? []
+                  : [action(`Mark ${issue.identifier} urgent`, 'related.mark-urgent', { issueId: issue.id })],
+              note: null,
+            }
+          }),
           Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
         ),
       )

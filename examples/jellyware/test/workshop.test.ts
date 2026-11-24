@@ -2,10 +2,12 @@ import { assert, describe, it } from '@effect/vitest'
 import { Effect, Layer, Stream } from 'effect'
 import { Story } from 'foldkit/test'
 
+import { PageHost } from '@hyper-effect/core'
 import { openPage, serve } from '@hyper-effect/core/testing'
 import {
   Changes,
   Contributions,
+  CurrentExtension,
   type ExtensionStatus,
   Extensions,
   type FileDiff,
@@ -18,6 +20,7 @@ import {
 import { USER_COOKIE_NAME, cookieValue } from '@/app/auth'
 import { SEED_MEMBERS } from '@/app/seed'
 import * as Store from '@/app/store'
+import { CUSTOMIZATIONS } from '@/app/extensions'
 import * as Workshop from '@/app/workshop/page'
 
 /* The workshop page: prompts start runs, administrators approve or reject
@@ -84,6 +87,8 @@ const model = (runs: ReadonlyArray<Run> = [], settingsChanges: ReadonlyArray<Set
     extensions: [standup, related],
     settingsChanges,
     members: SEED_MEMBERS,
+    inventory: { nav: [], slots: [], badges: [], commands: [] },
+    pages: [],
   }).model
 
 const fileDiff: FileDiff = {
@@ -189,6 +194,26 @@ describe('workshop: roles and review (Story)', () => {
   })
 })
 
+describe('workshop: what you can customize (Story)', () => {
+  it('fills the prompt with an example, for administrators only', () => {
+    const example = CUSTOMIZATIONS.find(each => each.id === 'issues.badges')!.example
+    Story.story(
+      Workshop.update,
+      Story.given(model()),
+      Story.message(Workshop.Message.ClickedTryExample({ id: 'nothing' })),
+      Story.model(next => assert.strictEqual(next.prompt, '')),
+      Story.message(Workshop.Message.ClickedTryExample({ id: 'issues.badges' })),
+      Story.model(next => assert.strictEqual(next.prompt, example)),
+    )
+    Story.story(
+      Workshop.update,
+      Story.given(model([], [], grace)),
+      Story.message(Workshop.Message.ClickedTryExample({ id: 'issues.badges' })),
+      Story.model(next => assert.strictEqual(next.prompt, '')),
+    )
+  })
+})
+
 describe('workshop: settings (Story)', () => {
   it('edits an extension’s settings as text and sends them to configure', () => {
     Story.story(
@@ -226,9 +251,26 @@ describe('workshop: settings (Story)', () => {
 })
 
 describe('workshop: the page over HTTP', () => {
+  // Related's card and command, registered as the loader would: owned by it.
+  const contributions = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const registry = yield* Contributions
+      yield* registry.slot({ slot: 'issue.sidebar', id: 'related', content: () => Stream.never })
+      yield* registry.command({ id: 'related.mark-urgent', run: () => Effect.succeed('') })
+    }).pipe(Effect.provideService(CurrentExtension, 'related')),
+  ).pipe(Layer.provideMerge(Contributions.layer))
+  const pageHost = Layer.succeed(
+    PageHost,
+    PageHost.of({
+      mount: () => Effect.void,
+      names: Effect.succeed(['standup']),
+      pages: Effect.succeed([{ name: 'standup', paths: ['/standup'], owner: 'standup' }]),
+    }),
+  )
   const services = Layer.mergeAll(
     Store.layer,
-    Contributions.layer,
+    contributions,
+    pageHost,
     Layer.succeed(
       Changes,
       Changes.of({
@@ -269,6 +311,15 @@ describe('workshop: the page over HTTP', () => {
       assert.include(page.html, 'id="changes-one"')
       assert.include(page.html, 'id="role-grace"')
       assert.notInclude(page.html, 'id="role-ada"')
+      // Every way to customize, with what fills it now and an example.
+      for (const each of CUSTOMIZATIONS) assert.include(page.html, `>${each.title}<`)
+      assert.include(page.html, 'id="customize-issue-sidebar"')
+      assert.include(page.html, 'id="try-issues-badges"')
+      assert.match(page.html, /id="customize-issue-sidebar"[\s\S]*?Now: <\/span>Related issues/)
+      assert.match(page.html, /id="customize-issues-badges"[\s\S]*?Now: <\/span>nothing yet/)
+      // What each extension adds.
+      assert.match(page.html, /id="extension-adds-related"[^>]*>.*cards on an issue · command related\.mark-urgent/)
+      assert.match(page.html, /id="extension-adds-standup"[^>]*>.*page \/standup/)
       assert.notInclude(page.html, 'id="undo-two"')
       assert.include(page.html, 'error TS2322')
       assert.include(page.html, 'id="extension-standup"')
@@ -295,6 +346,8 @@ describe('workshop: the page over HTTP', () => {
         assert.notInclude(page.html, `id="${id}"`)
       }
       assert.include(page.html, 'id="changes-one"')
+      assert.include(page.html, 'id="customize-issues-palette"')
+      assert.notInclude(page.html, 'id="try-issues-palette"')
     } finally {
       await server.dispose()
     }

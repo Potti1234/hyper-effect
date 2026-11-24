@@ -3,21 +3,33 @@ import { Command, Subscription, type Update } from 'foldkit'
 import type { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { defineMessageUnion } from 'foldkit/message'
 
-import { type Program, memoizeLast, region } from '@hyper-effect/core'
-import { Changes, type Contributions, type DiffLine, ExtensionStatus, Extensions, FileDiff, Run, SettingsChange } from '@hyper-effect/jellyware'
+import { PageHost, type Program, memoizeLast, region } from '@hyper-effect/core'
+import {
+  Changes,
+  Contributions,
+  type DiffLine,
+  ExtensionStatus,
+  Extensions,
+  FileDiff,
+  Inventory,
+  Run,
+  SettingsChange,
+} from '@hyper-effect/jellyware'
 
 import { renderTextarea } from '@/lib/textarea'
 import { cn } from '@/lib/utils'
 import { button } from '@/ui/button'
 
 import { Member, Role } from '../domain'
-import { Shell, frame, isAdmin, loadShell, shellChanges } from '../extensions'
+import { CUSTOMIZATIONS, type Customization, Shell, frame, isAdmin, loadShell, shellChanges } from '../extensions'
 import { Workspace } from '../store'
 
 /* The workshop: change the app by prompting an agent, read what a run would
    change and approve or reject it, follow each run, undo it, see which
-   extensions are loaded, and change their settings (with undo; a change an
-   extension fails with is put back).
+   extensions are loaded and what each adds, and change their settings
+   (with undo; a change an extension fails with is put back). "What you can
+   customize" lists every place an extension can change (CUSTOMIZATIONS in
+   src/app/extensions.ts), what is in it now, and an example prompt.
 
    Administrators do all of that and give others the role; members see the
    runs, their changes and the extensions. update checks the role for every
@@ -27,6 +39,10 @@ import { Workspace } from '../store'
 export const PATH = '/extensions'
 
 // MODEL
+
+/** A page served by the page host, and the extension that mounted it. */
+const HostedPage = S.Struct({ name: S.String, paths: S.Array(S.String), owner: S.NullOr(S.String) })
+type HostedPage = typeof HostedPage.Type
 
 /** The settings form open for one extension: the text of each field. */
 const Editing = S.Struct({ extension: S.String, values: S.Record(S.String, S.String) })
@@ -38,6 +54,9 @@ export const Model = S.Struct({
   extensions: S.Array(ExtensionStatus),
   settingsChanges: S.Array(SettingsChange),
   members: S.Array(Member),
+  /** What extensions registered, and the pages they serve. */
+  inventory: Inventory,
+  pages: S.Array(HostedPage),
   /** What runs change, by run id: the runs in review and those in `shown`. */
   diffs: S.Record(S.String, S.Array(FileDiff)),
   /** Runs not in review whose changes the member opened. */
@@ -61,6 +80,9 @@ export const Message = defineMessageUnion({
   ClickedShowChanges: { runId: S.String },
   ClickedHideChanges: { runId: S.String },
   ClickedSetRole: { memberId: S.String, role: Role },
+  ClickedTryExample: { id: S.String },
+  GotInventory: { inventory: Inventory },
+  GotPages: { pages: S.Array(HostedPage) },
   GotShell: { shell: Shell },
   GotMembers: { members: S.Array(Member) },
   GotDiffs: { diffs: S.Record(S.String, S.Array(FileDiff)) },
@@ -92,6 +114,7 @@ export const ClientMessage = S.Union([
   Message.ClickedShowChanges,
   Message.ClickedHideChanges,
   Message.ClickedSetRole,
+  Message.ClickedTryExample,
   Message.ClickedEditSettings,
   Message.ClickedCancelSettings,
   Message.ClickedToggleSetting,
@@ -183,6 +206,8 @@ type Flags = Readonly<{
   extensions: ReadonlyArray<ExtensionStatus>
   settingsChanges: ReadonlyArray<SettingsChange>
   members: ReadonlyArray<Member>
+  inventory: Inventory
+  pages: ReadonlyArray<HostedPage>
 }>
 
 export const init = (flags: Flags): Update.Return<Model, Message> => ({
@@ -192,6 +217,8 @@ export const init = (flags: Flags): Update.Return<Model, Message> => ({
     extensions: flags.extensions,
     settingsChanges: flags.settingsChanges,
     members: flags.members,
+    inventory: flags.inventory,
+    pages: flags.pages,
     diffs: {},
     shown: [],
     prompt: '',
@@ -251,6 +278,13 @@ export const update = (model: Model, message: Message): UpdateReturn =>
         admin(model) && memberId !== model.shell.me.id && model.members.some(member => member.id === memberId)
           ? { model: { ...model, notice: null }, commands: [SetRole({ memberId, role, actorId: model.shell.me.id })] }
           : { model },
+      // Fills the prompt with the example of one way to customize the app.
+      ClickedTryExample: ({ id }) => {
+        const found = CUSTOMIZATIONS.find(each => each.id === id)
+        return admin(model) && found !== undefined ? { model: { ...model, prompt: found.example, notice: null } } : { model }
+      },
+      GotInventory: ({ inventory }) => ({ model: { ...model, inventory } }),
+      GotPages: ({ pages }) => ({ model: { ...model, pages } }),
       // A member who loses the role mid-edit loses the open form.
       GotShell: ({ shell }) => ({ model: { ...model, shell, editing: isAdmin(shell.me) ? model.editing : null } }),
       GotMembers: ({ members }) => ({ model: { ...model, members } }),
@@ -314,6 +348,7 @@ const gotRuns = memoizeLast((runs: ReadonlyArray<Run>) => Message.GotRuns({ runs
 const gotExtensions = memoizeLast((extensions: ReadonlyArray<ExtensionStatus>) => Message.GotExtensions({ extensions }))
 const gotSettingsChanges = memoizeLast((changes: ReadonlyArray<SettingsChange>) => Message.GotSettingsChanges({ changes }))
 const gotMembers = memoizeLast((members: ReadonlyArray<Member>) => Message.GotMembers({ members }))
+const gotInventory = memoizeLast((inventory: Inventory) => Message.GotInventory({ inventory }))
 
 /** The runs whose diffs the page shows, sorted. */
 const diffIds = (model: Model) =>
@@ -322,7 +357,34 @@ const diffIds = (model: Model) =>
     .map(run => run.id)
     .sort()
 
-export const subscriptions = Subscription.make<Model, Message, Workspace | Contributions | Changes | Extensions>()(entry => ({
+export const subscriptions = Subscription.make<Model, Message, Workspace | Contributions | Changes | Extensions | PageHost>()(entry => ({
+  inventory: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(Contributions.use(contributions => Effect.succeed(contributions.inventoryChanges.pipe(Stream.map(gotInventory))))),
+    },
+  ),
+  // Pages come and go with extensions: read again after each change.
+  pages: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(
+          Effect.gen(function* () {
+            const extensions = yield* Extensions
+            const host = yield* PageHost
+            return extensions.changes.pipe(
+              Stream.mapEffect(() => host.pages),
+              Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+              Stream.map(pages => Message.GotPages({ pages })),
+            )
+          }),
+        ),
+    },
+  ),
   shell: entry(
     { memberId: S.String },
     {
@@ -714,8 +776,23 @@ const settingsHistory = (
     ],
   )
 
-const extensionRow = (extension: ExtensionStatus, editing: Editing | null, canChange: boolean, h: HtmlBuilder<Message>): Html =>
-  h.li(
+const titleOfSlot = (slot: string) => CUSTOMIZATIONS.find(each => each.slot === slot)?.title ?? slot
+
+/** What an extension adds to the app, as short phrases. */
+const addsOf = (model: Model, id: string): ReadonlyArray<string> => [
+  ...model.pages.filter(page => page.owner === id).map(page => `page ${page.paths.join(', ')}`),
+  ...model.inventory.nav.filter(nav => nav.owner === id).map(nav => `sidebar entry "${nav.entry.label}"`),
+  ...[...model.inventory.slots, ...model.inventory.badges].filter(entry => entry.owner === id).map(entry => titleOfSlot(entry.slot).toLowerCase()),
+  ...model.inventory.commands
+    .filter(command => command.owner === id)
+    .map(command => `command ${command.id}${command.roles === null ? '' : ` (${command.roles.join(', ')} only)`}`),
+]
+
+const extensionRow = (extension: ExtensionStatus, model: Model, h: HtmlBuilder<Message>): Html => {
+  const editing = model.editing
+  const canChange = admin(model)
+  const adds = addsOf(model, extension.id)
+  return h.li(
     [h.Id(`extension-${extension.id}`), h.Class('py-2'), h.DataAttribute('state', extension.state)],
     [
       h.div(
@@ -731,6 +808,10 @@ const extensionRow = (extension: ExtensionStatus, editing: Editing | null, canCh
           ),
         ],
       ),
+      ...(extension.description === null ? [] : [h.p([h.Class('mt-0.5 text-[11.5px] text-muted-foreground')], [extension.description])]),
+      ...(adds.length === 0
+        ? []
+        : [h.p([h.Id(`extension-adds-${extension.id}`), h.Class('mt-0.5 text-[11px]')], [h.span([h.Class('text-muted-foreground')], ['Adds: ']), adds.join(' · ')])]),
       ...(extension.error === null
         ? []
         : [h.pre([h.Class('mt-1 max-h-32 overflow-auto text-[11px] whitespace-pre-wrap text-destructive')], [extension.error])]),
@@ -764,6 +845,77 @@ const extensionRow = (extension: ExtensionStatus, editing: Editing | null, canCh
                 ],
               ),
             ]),
+    ],
+  )
+}
+
+/** Who fills one way to customize now: extension names, or the app. */
+const filledBy = (model: Model, customization: Customization): ReadonlyArray<string> => {
+  const nameOf = (owner: string | null) =>
+    owner === null ? 'the app' : (model.extensions.find(extension => extension.id === owner)?.name ?? owner)
+  const owners =
+    customization.slot !== null
+      ? [...model.inventory.slots, ...model.inventory.badges].filter(entry => entry.slot === customization.slot).map(entry => entry.owner)
+      : customization.id === 'page'
+        ? model.pages.map(page => page.owner).filter(owner => owner !== null)
+        : model.extensions.filter(extension => extension.settings.length > 0).map(extension => extension.id)
+  return [...new Set(owners)].map(nameOf)
+}
+
+/** Every place an extension can change the app, as bb lists a plugin's
+ *  capabilities: where it shows, what is in it now, and an example. */
+const customizeView = (model: Model, h: HtmlBuilder<Message>): Html =>
+  h.section(
+    [h.Id('workshop-customize')],
+    [
+      h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['What you can customize']),
+      h.ul(
+        [h.Class('grid gap-2 sm:grid-cols-2')],
+        CUSTOMIZATIONS.map(customization => {
+          const now = filledBy(model, customization)
+          return h.li(
+            [
+              h.Id(`customize-${customization.id.replace(/[^A-Za-z0-9_-]/g, '-')}`),
+              h.DataAttribute('slot', customization.slot ?? ''),
+              h.Class('flex flex-col gap-1 rounded-lg border bg-card p-3'),
+            ],
+            [
+              h.div(
+                [h.Class('flex items-center gap-2')],
+                [
+                  h.span([h.Class('flex-1 text-[13px] font-medium')], [customization.title]),
+                  ...(customization.slot === null ? [] : [h.code([h.Class('text-[10.5px] text-muted-foreground')], [customization.slot])]),
+                ],
+              ),
+              h.p([h.Class('text-[12px] text-muted-foreground')], [customization.where]),
+              h.p([h.Class('text-[11.5px]')], [h.span([h.Class('text-muted-foreground')], ['Now: ']), now.length === 0 ? 'nothing yet' : now.join(', ')]),
+              h.div(
+                [h.Class('mt-auto flex items-center justify-end gap-1.5 pt-1')],
+                [
+                  ...(customization.seeAt === null
+                    ? []
+                    : [h.a([h.Href(customization.seeAt), h.Class('text-[11.5px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline')], ['See it'])]),
+                  ...(admin(model)
+                    ? [
+                        button(
+                          {
+                            id: `try-${customization.id.replace(/[^A-Za-z0-9_-]/g, '-')}`,
+                            children: ['Try an example'],
+                            variant: 'outline',
+                            size: 'sm',
+                            class: 'h-6 text-[11px]',
+                            onClick: Message.ClickedTryExample({ id: customization.id }),
+                          },
+                          h,
+                        ),
+                      ]
+                    : []),
+                ],
+              ),
+            ],
+          )
+        }),
+      ),
     ],
   )
 
@@ -821,6 +973,12 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
                 render: () => (admin(model) ? promptForm(model, h) : membersNote(model, h)),
               }),
               region(h, {
+                id: 'workshop-customize',
+                deps: [model.inventory, model.pages, model.extensions, admin(model)],
+                render: () => customizeView(model, h),
+              }),
+              h.h2([h.Class('-mb-1 text-[12px] font-medium text-muted-foreground')], ['Changes']),
+              region(h, {
                 id: 'workshop-runs',
                 deps: [model.runs, model.diffs, model.shown, admin(model)],
                 render: () =>
@@ -838,13 +996,13 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
             [
               region(h, {
                 id: 'workshop-extensions',
-                deps: [model.extensions, model.editing, model.settingsChanges, admin(model)],
+                deps: [model.extensions, model.editing, model.settingsChanges, admin(model), model.inventory, model.pages],
                 render: () =>
                   h.section(
                     [h.Id('workshop-extensions')],
                     [
                       h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['Loaded extensions']),
-                      h.ul([h.Class('divide-y')], model.extensions.map(extension => extensionRow(extension, model.editing, admin(model), h))),
+                      h.ul([h.Class('divide-y')], model.extensions.map(extension => extensionRow(extension, model, h))),
                       settingsHistory(model.settingsChanges, model.extensions, admin(model), h),
                     ],
                   ),
@@ -863,7 +1021,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
   ),
 })
 
-export const program: Program<Model, Message, ClientMessage, Flags, Workspace | Contributions | Changes | Extensions> = {
+export const program: Program<Model, Message, ClientMessage, Flags, Workspace | Contributions | Changes | Extensions | PageHost> = {
   name: 'workshop',
   Model,
   ClientMessage,
@@ -874,7 +1032,9 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace | 
       const extensions = yield* Extensions.use(extensions => extensions.current)
       const settingsChanges = yield* Extensions.use(extensions => extensions.currentSettingsChanges)
       const members = (yield* Workspace.use(workspace => workspace.current)).members
-      return { shell, runs, extensions, settingsChanges, members }
+      const inventory = yield* Contributions.use(contributions => contributions.inventory)
+      const pages = yield* PageHost.use(host => host.pages)
+      return { shell, runs, extensions, settingsChanges, members, inventory, pages }
     }),
   init,
   update,

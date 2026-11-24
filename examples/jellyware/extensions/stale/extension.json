@@ -1,0 +1,17 @@
+{
+  "id": "stale",
+  "name": "Stale issues",
+  "version": "1",
+  "entry": "extension.ts",
+  "description": "A badge on open issues nobody has changed for a while, on the issue lists and the board.",
+  "settings": {
+    "days": {
+      "type": "number",
+      "label": "Stale after (days)",
+      "description": "An open issue unchanged for this many days gets the badge.",
+      "default": 10,
+      "min": 1,
+      "max": 90
+    }
+  }
+}

@@ -11,8 +11,10 @@ import { chromium } from 'playwright'
    open, and the extension unloaded and loaded again while another person's
    page shows the sidebar.
 
-   Then roles on /extensions: Ada administers, Grace only looks until Ada
-   gives her the role.
+   Then the slots of the issue lists (badges from extensions/stale, palette
+   entries from extensions/related and extensions/standup), "What you can
+   customize" on /extensions, and roles there: Ada administers, Grace only
+   looks until Ada gives her the role.
 
    The last part changes the app by prompt on /extensions: a run waits for
    review, Ada reads the diff and approves it. It needs the server started
@@ -190,6 +192,56 @@ try {
     check('on the other person’s page too', await until(grace.page, () => document.querySelector('#card-related h3')?.textContent === 'Related'))
   }
 
+  // SLOTS IN THE ISSUE LISTS
+  const openList = async path => {
+    const stream = ada.page.waitForRequest(request => request.url().includes('/stream'))
+    await ada.page.goto(`${base}${path}`)
+    await stream
+    await ada.page.waitForSelector('#issue-list')
+    await ada.page.waitForTimeout(400)
+  }
+  await openList('/team/ENG')
+  check('an extension’s badges show on issue rows', (await ada.page.locator('#issue-list [data-badge="stale"]').count()) > 0)
+  await openList('/team/ENG?view=board')
+  check('and on board cards', (await ada.page.locator('#column-todo [data-badge="stale"], #column-backlog [data-badge="stale"], #column-in_progress [data-badge="stale"]').count()) > 0)
+  await openList('/team/ENG')
+  // Select the first issue that is not urgent (j moves the selection).
+  const steps = await ada.page.evaluate(() =>
+    [...document.querySelectorAll('#issue-list [id^="row-"]')].findIndex(row => row.querySelector('[aria-label="Priority: Urgent"]') === null),
+  )
+  for (let i = 0; i <= steps; i++) await ada.page.keyboard.press('j')
+  const chosen = await ada.page.evaluate(() => new Promise(resolve => setTimeout(() => resolve(document.querySelector('[data-selected="true"]')?.id.slice(4)), 400)))
+  await ada.page.keyboard.press('Control+k')
+  await until(ada.page, () => document.activeElement?.id === 'picker-input')
+  check(
+    'the palette lists an extension’s action for the selected issue',
+    await until(ada.page, id => [...document.querySelectorAll('#picker [role="option"]')].some(option => option.textContent?.includes(`Mark ${id} urgent`)), chosen),
+    chosen,
+  )
+  check('and an extension’s link', await until(ada.page, () => (document.querySelector('#picker')?.textContent ?? '').includes('Open Stand-up')))
+  await ada.page.getByRole('option', { name: `Mark ${chosen} urgent` }).click()
+  check('the action runs the extension’s command', await until(ada.page, id => document.querySelector(`#row-${id} [aria-label="Priority: Urgent"]`) !== null, chosen))
+  await ada.page.keyboard.press('Control+k')
+  await until(ada.page, () => document.activeElement?.id === 'picker-input')
+  await until(ada.page, () => (document.querySelector('#picker')?.textContent ?? '').includes('Open Stand-up'))
+  await ada.page.getByRole('option', { name: 'Open Stand-up' }).click()
+  check('the link opens its page', await until(ada.page, () => location.pathname === '/standup'))
+
+  // WHAT YOU CAN CUSTOMIZE
+  await ada.page.goto(`${base}/extensions`)
+  await ada.page.waitForSelector('#workshop-customize')
+  await ada.page.waitForTimeout(300)
+  check('the workshop lists every place an extension can change', (await ada.page.locator('#workshop-customize > ul > li').count()) === 5)
+  check(
+    'with what fills each now',
+    (await ada.page.textContent('#customize-issues-badges')).includes('Stale issues') &&
+      (await ada.page.textContent('#customize-issues-palette')).includes('Related issues'),
+  )
+  check('and what each extension adds', (await ada.page.textContent('#extension-adds-stale')).includes('badges on issues'))
+  await ada.page.click('#try-issues-badges')
+  check('an example fills the prompt', await until(ada.page, () => document.querySelector('#workshop-prompt')?.value.includes('Overdue') === true))
+  await ada.page.fill('#workshop-prompt', '')
+
   // ROLES
   await grace.page.goto(`${base}/extensions`)
   await grace.page.waitForSelector('#workshop-members')
@@ -198,6 +250,7 @@ try {
     (await grace.page.textContent('#workshop-form')).includes('Only administrators') && (await grace.page.locator('#workshop-prompt').count()) === 0,
   )
   check('nor settings buttons', (await grace.page.locator('#workshop-extensions button[id^="settings-"]').count()) === 0)
+  check('nor examples to try', (await grace.page.locator('#workshop-customize button').count()) === 0)
   await ada.page.goto(`${base}/extensions`)
   await ada.page.waitForSelector('#role-grace')
   await ada.page.click('#role-grace')
