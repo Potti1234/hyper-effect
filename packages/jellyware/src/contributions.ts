@@ -27,7 +27,24 @@ import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Sc
      the roles that may run it; the registry asks the app for the member's
      roles (`rolesOf`) before `run`, and leaves the action out of the cards
      of a member without one (the member looking is the slot context's
-     `memberId`). */
+     `memberId`).
+
+   Every entry remembers the extension that added it (`CurrentExtension`,
+   provided by the loader while it builds an extension), so `inventory`
+   can say what each extension contributes. */
+
+/** The extension being built: its id, or null for the app's own code. */
+export const CurrentExtension = Context.Reference<string | null>('@hyper-effect/jellyware/CurrentExtension', {
+  defaultValue: () => null,
+})
+
+/** What is registered now, the newest entry of each id, with the
+ *  extension that added it (null: the app). */
+export type Inventory = Readonly<{
+  nav: ReadonlyArray<Readonly<{ entry: NavEntry; owner: string | null }>>
+  slots: ReadonlyArray<Readonly<{ slot: string; id: string; owner: string | null }>>
+  commands: ReadonlyArray<Readonly<{ id: string; roles: ReadonlyArray<string> | null; owner: string | null }>>
+}>
 
 /** A sidebar entry. `icon` is a name from the app's icon set. */
 export const NavEntry = S.Struct({
@@ -120,6 +137,8 @@ export class Contributions extends Context.Service<
     /** Runs a command; fails with a line for the member when it is gone or
      *  fails. */
     readonly run: (id: string, input: CommandInput) => Effect.Effect<string, string>
+    /** Everything registered now, with who added it. */
+    readonly inventory: Effect.Effect<Inventory>
   }
 >()('@hyper-effect/jellyware/Contributions') {
   /** The registry. */
@@ -156,18 +175,19 @@ export class Contributions extends Context.Service<
               })
 
         return Contributions.of({
-          nav: entry => navs.add(entry.id, entry),
+          nav: entry => Effect.flatMap(CurrentExtension, owner => navs.add(entry.id, entry, owner)),
           navChanges: SubscriptionRef.changes(navs.live),
           navEntries: SubscriptionRef.get(navs.live),
           slot: <R,>(entry: SlotEntry<R>) =>
             Effect.gen(function* () {
               // The extension's services, for content streams run by pages.
               const services = yield* Effect.context<R>()
+              const owner = yield* CurrentExtension
               yield* slots.add(`${entry.slot}\u0000${entry.id}`, {
                 slot: entry.slot,
                 id: entry.id,
                 content: context => entry.content(context).pipe(Stream.provideContext(services)),
-              })
+              }, owner)
             }),
           slotCards: (slot, context) =>
             SubscriptionRef.changes(slots.live).pipe(
@@ -200,11 +220,12 @@ export class Contributions extends Context.Service<
           command: <R,>(entry: CommandEntry<R>) =>
             Effect.gen(function* () {
               const services = yield* Effect.context<R>()
+              const owner = yield* CurrentExtension
               yield* commands.add(entry.id, {
                 id: entry.id,
                 ...(entry.roles === undefined ? {} : { roles: entry.roles }),
                 run: input => entry.run(input).pipe(Effect.provideContext(services)),
-              })
+              }, owner)
             }),
           run: (id, input) =>
             Effect.flatMap(SubscriptionRef.get(commands.live), live => {
@@ -216,6 +237,11 @@ export class Contributions extends Context.Service<
                   : Effect.fail(`Only members with the role ${(command.roles ?? []).join(' or ')} may do this.`),
               )
             }),
+          inventory: Effect.sync(() => ({
+            nav: navs.owned().map(({ value, owner }) => ({ entry: value, owner })),
+            slots: slots.owned().map(({ value, owner }) => ({ slot: value.slot, id: value.id, owner })),
+            commands: commands.owned().map(({ value, owner }) => ({ id: value.id, roles: value.roles ?? null, owner })),
+          })),
         })
       }),
     )
@@ -238,10 +264,10 @@ const withLoading = (id: string, timeout: Duration.Input, content: Stream.Stream
   )
 
 /** A stack of entries per id; `live` holds the newest of each id, in the
- *  order the ids were first added. */
+ *  order the ids were first added, and `owned` the same with their owners. */
 const stacks = <A>() =>
   Effect.gen(function* () {
-    const byId = new Map<string, ReadonlyArray<Readonly<{ seq: number; value: A }>>>()
+    const byId = new Map<string, ReadonlyArray<Readonly<{ seq: number; value: A; owner: string | null }>>>()
     let seq = 0
     const live = yield* SubscriptionRef.make<ReadonlyArray<A>>([])
     const publish = Effect.suspend(() =>
@@ -250,9 +276,10 @@ const stacks = <A>() =>
         [...byId.values()].flatMap(stack => stack.slice(-1).map(entry => entry.value)),
       ),
     )
-    const add = (id: string, value: A): Effect.Effect<void, never, Scope.Scope> =>
+    const owned = () => [...byId.values()].flatMap(stack => stack.slice(-1))
+    const add = (id: string, value: A, owner: string | null): Effect.Effect<void, never, Scope.Scope> =>
       Effect.suspend(() => {
-        const entry = { seq: seq++, value }
+        const entry = { seq: seq++, value, owner }
         return Effect.acquireRelease(
           Effect.suspend(() => {
             byId.set(id, [...(byId.get(id) ?? []), entry])
@@ -267,5 +294,5 @@ const stacks = <A>() =>
             }),
         )
       })
-    return { live, add }
+    return { live, add, owned }
   })

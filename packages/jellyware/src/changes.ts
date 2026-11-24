@@ -89,6 +89,9 @@ export type Task = Readonly<{
   runDirectory: string
   /** What failed after the agent's previous attempt; null on the first. */
   feedback: string | null
+  /** What the app has now (`Options.guide`), made when the run started;
+   *  null without one. */
+  guide: string | null
 }>
 
 /** Works on the stage until it is done; answers with a summary. */
@@ -125,7 +128,7 @@ export class Changes extends Context.Service<
   }
 >()('@hyper-effect/jellyware/Changes') {}
 
-export type Options = Readonly<{
+export type Options<R = never> = Readonly<{
   /** The live extensions folder the loader watches. */
   extensionsDirectory: string
   /** Where runs keep their stages, snapshots and journals. */
@@ -140,6 +143,9 @@ export type Options = Readonly<{
   /** Whether a checked run waits for a person to approve it. Default
    *  false: it installs at once. */
   review?: boolean
+  /** Describes the app for the agent (`guide` in guide.ts); run when a run
+   *  starts. */
+  guide?: Effect.Effect<string, never, R>
 }>
 
 // CHECKS EVERY RUN GETS
@@ -193,11 +199,20 @@ const encodeRun = S.encodeEffect(S.fromJsonString(Run))
 const decodeRun = S.decodeUnknownEffect(S.fromJsonString(Run))
 
 /** The change pipeline for the extensions the loader (`Extensions`) runs. */
-export const layer = (options: Options): Layer.Layer<Changes, never, Extensions> =>
+export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, never, Extensions | R> =>
   Layer.effect(
     Changes,
     Effect.gen(function* () {
       const extensions = yield* Extensions
+      const appServices = yield* Effect.context<R>()
+      /** The guide now; a guide that dies leaves the agent without one. */
+      const describeApp =
+        options.guide === undefined
+          ? Effect.succeed(null)
+          : options.guide.pipe(
+              Effect.provideContext(appServices),
+              Effect.catchCause(cause => Effect.as(Effect.logWarning('jellyware: the guide failed', cause), null)),
+            )
       const live = resolve(options.extensionsDirectory)
       const work = resolve(options.workDirectory)
       const runsDirectory = join(work, 'runs')
@@ -337,6 +352,7 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           let run: Run = { ...queued, state: 'working' }
           yield* save(run)
 
+          const guide = yield* describeApp
           const baseline = yield* hashesOf(live, yield* Effect.promise(() => listFolders(live)))
           yield* Effect.promise(() => copyFolder(live, stage))
           const guarded = yield* hashTree(protectedDirectories)
@@ -345,7 +361,7 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           while (true) {
             run = { ...run, state: 'working', attempts: run.attempts + 1 }
             yield* save(run)
-            const summary = yield* options.agent.work({ prompt: run.prompt, stage, runDirectory, feedback })
+            const summary = yield* options.agent.work({ prompt: run.prompt, stage, runDirectory, feedback, guide })
             run = { ...run, summary, state: 'checking' }
             yield* save(run)
 

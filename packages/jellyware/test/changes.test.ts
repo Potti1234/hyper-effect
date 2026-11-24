@@ -56,6 +56,7 @@ const app = changesLayer({
   workDirectory: work,
   protectedDirectories: [appSources],
   attempts: 2,
+  guide: Effect.succeed('# What the app has now'),
   agent: {
     work: task =>
       Effect.tryPromise({
@@ -112,6 +113,7 @@ describe('changes', () => {
           // The agent edits the stage; the change goes live.
           const renamed = await change('Call it Hi', async task => {
             assert.isNull(task.feedback)
+            assert.strictEqual(task.guide, '# What the app has now')
             writeExtension(task.stage, 'hello', 'Hi')
             return 'Renamed the entry.'
           })

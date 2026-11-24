@@ -22,6 +22,9 @@ import {
 import { KeyValueStore } from 'effect/persistence'
 
 import { hashFolder, listFolders } from './files.ts'
+import { PageOwner } from '@hyper-effect/core'
+
+import { CurrentExtension } from './contributions.ts'
 import * as Graft from './graft.ts'
 import {
   ExtensionSettings,
@@ -81,6 +84,8 @@ export const ExtensionStatus = S.Struct({
   state: S.Literals(['loading', 'active', 'pending', 'failed']),
   /** The generation serving now; null while no version runs. */
   running: S.NullOr(S.Number),
+  /** From the manifest. */
+  description: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
   error: S.NullOr(S.String),
   /** The declared settings with the values in effect. */
   settings: S.Array(SettingField),
@@ -247,7 +252,13 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           )
           const specs = manifest.settings ?? {}
           const values = effectiveValues(specs, yield* readValues(id))
-          const base = { id, name: manifest.name, version: manifest.version, settings: fieldsOf(specs, values) }
+          const base = {
+            id,
+            name: manifest.name,
+            version: manifest.version,
+            description: manifest.description ?? null,
+            settings: fieldsOf(specs, values),
+          }
           const runningNow = () => running.get(id)?.generation ?? null
           // Files and settings: either changing loads the extension again.
           const hash = `${(yield* Effect.promise(() => hashFolder(folder))) ?? ''}:${JSON.stringify(values)}`
@@ -277,7 +288,16 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           }
 
           const scope = yield* Scope.fork(lifetime)
-          const configured = extension.pipe(Layer.provide(Layer.succeed(ExtensionSettings, makeSettings(values))))
+          // Its settings, and its id as the owner of what it registers.
+          const configured = extension.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(ExtensionSettings, makeSettings(values)),
+                Layer.succeed(CurrentExtension, id),
+                Layer.succeed(PageOwner, id),
+              ),
+            ),
+          )
           const mounted = yield* Graft.mount(configured, { name: id, requires: options.requires }).pipe(
             Scope.provide(scope),
           )
@@ -321,6 +341,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
                 id,
                 name: known?.name ?? id,
                 version: known?.version ?? '',
+                description: known?.description ?? null,
                 state: 'failed',
                 running: running.get(id)?.generation ?? null,
                 error: error.message,
