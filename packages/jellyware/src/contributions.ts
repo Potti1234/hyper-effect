@@ -23,7 +23,11 @@ import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Sc
      others.
    - Commands: what a slot's actions run, by id, with JSON arguments, for a
      member. A page only runs actions it shows (they are in its Model), so a
-     browser cannot invent a command or its arguments. */
+     browser cannot invent a command or its arguments. A command may name
+     the roles that may run it; the registry asks the app for the member's
+     roles (`rolesOf`) before `run`, and leaves the action out of the cards
+     of a member without one (the member looking is the slot context's
+     `memberId`). */
 
 /** A sidebar entry. `icon` is a name from the app's icon set. */
 export const NavEntry = S.Struct({
@@ -78,10 +82,23 @@ export type CommandInput = Readonly<{ args: S.Json; memberId: string }>
 
 export type CommandEntry<R = never> = Readonly<{
   id: string
+  /** Members with one of these roles may run it; without, every member
+   *  who sees the action. The registry checks this before `run`. */
+  roles?: ReadonlyArray<string>
   /** Answers with a line for the member ("Marked ENG-4 urgent"), or fails
-   *  with one. Check the member's rights and decode `args` here: the page
-   *  only guarantees that it showed this action. */
+   *  with one. Decode `args` here and check what the roles do not cover
+   *  (that the member may change this issue, say): the page only
+   *  guarantees that it showed this action. */
   run: (input: CommandInput) => Effect.Effect<string, string, R>
+}>
+
+export type ContributionsOptions<R> = Readonly<{
+  /** How long a slot card may go without content before it shows as
+   *  loading. Default one second. */
+  cardTimeout?: Duration.Input
+  /** The roles of a member, for commands that name roles. Without it, such
+   *  commands are refused to everyone. */
+  rolesOf?: (memberId: string) => Effect.Effect<ReadonlyArray<string>, never, R>
 }>
 
 export class Contributions extends Context.Service<
@@ -105,9 +122,8 @@ export class Contributions extends Context.Service<
     readonly run: (id: string, input: CommandInput) => Effect.Effect<string, string>
   }
 >()('@hyper-effect/jellyware/Contributions') {
-  /** The registry; a slot card without content after `cardTimeout`
-   *  (default one second) shows as loading until its content comes. */
-  static readonly make = (options: Readonly<{ cardTimeout?: Duration.Input }> = {}): Layer.Layer<Contributions> =>
+  /** The registry. */
+  static readonly make = <R = never>(options: ContributionsOptions<R> = {}): Layer.Layer<Contributions, never, R> =>
     Layer.effect(
       Contributions,
       Effect.gen(function* () {
@@ -115,6 +131,29 @@ export class Contributions extends Context.Service<
         const navs = yield* stacks<NavEntry>()
         const slots = yield* stacks<SlotEntry>()
         const commands = yield* stacks<CommandEntry>()
+        const appServices = yield* Effect.context<R>()
+
+        const rolesOf = (memberId: string): Effect.Effect<ReadonlyArray<string>> =>
+          options.rolesOf === undefined ? Effect.succeed([]) : options.rolesOf(memberId).pipe(Effect.provideContext(appServices))
+        /** Whether `memberId` may run `command`; no member is no roles. */
+        const mayRun = (command: CommandEntry, memberId: string | undefined) =>
+          command.roles === undefined
+            ? Effect.succeed(true)
+            : Effect.map(memberId === undefined ? Effect.succeed([]) : rolesOf(memberId), roles =>
+                command.roles?.some(role => roles.includes(role)) === true,
+              )
+        /** The card without the actions its viewer may not run. */
+        const allowedActions = (content: SlotContent, memberId: string | undefined) =>
+          content.actions.length === 0
+            ? Effect.succeed(content)
+            : Effect.gen(function* () {
+                const live = yield* SubscriptionRef.get(commands.live)
+                const actions = yield* Effect.filter(content.actions, action => {
+                  const command = live.find(entry => entry.id === action.command)
+                  return command === undefined ? Effect.succeed(true) : mayRun(command, memberId)
+                })
+                return actions.length === content.actions.length ? content : { ...content, actions }
+              })
 
         return Contributions.of({
           nav: entry => navs.add(entry.id, entry),
@@ -143,6 +182,7 @@ export class Contributions extends Context.Service<
                           entry.id,
                           cardTimeout,
                           entry.content(context).pipe(
+                            Stream.mapEffect(content => allowedActions(content, context['memberId'])),
                             Stream.catchCause(cause =>
                               Stream.succeed<SlotContent>({
                                 title: entry.id,
@@ -162,17 +202,19 @@ export class Contributions extends Context.Service<
               const services = yield* Effect.context<R>()
               yield* commands.add(entry.id, {
                 id: entry.id,
+                ...(entry.roles === undefined ? {} : { roles: entry.roles }),
                 run: input => entry.run(input).pipe(Effect.provideContext(services)),
               })
             }),
           run: (id, input) =>
             Effect.flatMap(SubscriptionRef.get(commands.live), live => {
               const command = live.find(entry => entry.id === id)
-              return command === undefined
-                ? Effect.fail('This action is no longer available.')
-                : command.run(input).pipe(
-                    Effect.catchDefect(defect => Effect.fail(`The action failed: ${String(defect)}`)),
-                  )
+              if (command === undefined) return Effect.fail('This action is no longer available.')
+              return Effect.flatMap(mayRun(command, input.memberId), allowed =>
+                allowed
+                  ? command.run(input).pipe(Effect.catchDefect(defect => Effect.fail(`The action failed: ${String(defect)}`)))
+                  : Effect.fail(`Only members with the role ${(command.roles ?? []).join(' or ')} may do this.`),
+              )
             }),
         })
       }),

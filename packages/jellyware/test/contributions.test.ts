@@ -101,5 +101,49 @@ describe('contributions: slots and commands', () => {
       )
     }).pipe(Effect.provide(Contributions.layer)),
   )
-})
+  it.effect('checks the roles a command names, and leaves its action out of the cards of members without one', () =>
+    Effect.gen(function* () {
+      const contributions = yield* Contributions
+      const scope = yield* Scope.make()
+      yield* contributions.command({ id: 'close', roles: ['admin'], run: ({ memberId }) => Effect.succeed(`Closed by ${memberId}`) }).pipe(Scope.provide(scope))
+      yield* contributions.command({ id: 'watch', run: ({ memberId }) => Effect.succeed(`Watched by ${memberId}`) }).pipe(Scope.provide(scope))
+      yield* contributions
+        .slot({
+          slot: 's',
+          id: 'card',
+          content: () =>
+            Stream.succeed({
+              ...card('Card'),
+              actions: [
+                { label: 'Close', command: 'close', args: null },
+                { label: 'Watch', command: 'watch', args: null },
+              ],
+            }),
+        })
+        .pipe(Scope.provide(scope))
 
+      assert.strictEqual(yield* contributions.run('close', { args: null, memberId: 'ada' }), 'Closed by ada')
+      assert.strictEqual(yield* Effect.flip(contributions.run('close', { args: null, memberId: 'grace' })), 'Only members with the role admin may do this.')
+      assert.strictEqual(yield* contributions.run('watch', { args: null, memberId: 'grace' }), 'Watched by grace')
+
+      const labels = (memberId?: string) =>
+        firstCards(contributions.slotCards('s', memberId === undefined ? {} : { memberId })).pipe(
+          Effect.map(cards => cards.flatMap(each => each.content.actions.map(action => action.label))),
+        )
+      assert.deepStrictEqual(yield* labels('ada'), ['Close', 'Watch'])
+      assert.deepStrictEqual(yield* labels('grace'), ['Watch'])
+      assert.deepStrictEqual(yield* labels(), ['Watch'])
+      yield* Scope.close(scope, Exit.void)
+    }).pipe(Effect.provide(Contributions.make({ rolesOf: memberId => Effect.succeed(memberId === 'ada' ? ['admin'] : ['member']) }))),
+  )
+
+  it.effect('refuses commands that name roles when the app does not say who has which', () =>
+    Effect.gen(function* () {
+      const contributions = yield* Contributions
+      const scope = yield* Scope.make()
+      yield* contributions.command({ id: 'close', roles: ['admin'], run: () => Effect.succeed('Closed') }).pipe(Scope.provide(scope))
+      assert.include(yield* Effect.flip(contributions.run('close', { args: null, memberId: 'ada' })), 'role admin')
+      yield* Scope.close(scope, Exit.void)
+    }).pipe(Effect.provide(Contributions.layer)),
+  )
+})

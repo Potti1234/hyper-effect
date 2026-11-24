@@ -25,6 +25,7 @@ export {
   type CommandEntry,
   type CommandInput,
   Contributions,
+  type ContributionsOptions,
   NavEntry,
   SlotAction,
   SlotCard,
