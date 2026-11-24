@@ -8,7 +8,7 @@
    @hyper-effect/core/testing. */
 
 export { DATASTAR_PATH, layer, metricsRoutes, nodeOfPath, pageRoutes, serveDatastar, StylesheetChanges, type Limits, type Options, type PageRoute, type RequestContext } from './server.ts'
-export { PageConflict, PageHost, pageHost } from './page-host.ts'
+export { type HostedPage, PageConflict, PageHost, PageOwner, pageHost } from './page-host.ts'
 export { PageNotFound, PageRedirect, type PageRequest, type Program } from './program.ts'
 export type { ContentSecurityPolicy, Secret } from './security.ts'
 export { secretFromEnvironment } from './security.ts'

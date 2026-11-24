@@ -2,7 +2,7 @@ import { afterAll, assert, describe, it } from '@effect/vitest'
 import { Context, Effect, Exit, Layer, Scope } from 'effect'
 import { HttpRouter, HttpServer, HttpServerResponse } from 'effect/http'
 
-import { PageHost, pageHost } from '../src/page-host'
+import { PageHost, PageOwner, pageHost } from '../src/page-host'
 import type { Program } from '../src/program'
 import { DATASTAR_PATH } from '../src/server'
 import { makeStore, openPage, openStream, readUntil } from '../src/testing'
@@ -31,12 +31,13 @@ afterAll(() => server.dispose())
 const get = (path: string) => server.handler(new Request(`http://localhost${path}`))
 
 /** Mounts `program` in a new scope and returns a function that closes it. */
-const mount = async <M, Msg, C extends Msg, F>(program: Program<M, Msg, C, F>, path: string) => {
+const mount = async <M, Msg, C extends Msg, F>(program: Program<M, Msg, C, F>, path: string, owner: string | null = null) => {
   // The host exists once the handler has built its layer, on the first request.
   if (host === undefined) await get('/own')
   const scope = Effect.runSync(Scope.make())
   await Effect.runPromise(
     Effect.flatMap(PageHost, page => page.mount(program, { path })).pipe(
+      Effect.provideService(PageOwner, owner),
       Effect.provide(host!),
       Effect.provide(store),
       Scope.provide(scope),
@@ -128,12 +129,14 @@ describe('page host', () => {
     await close()
   })
 
-  it('lists the pages it serves', async () => {
-    const close = await mount({ ...Greeter.program, name: 'listed' }, '/listed')
+  it('lists the pages it serves, with their paths and owners', async () => {
+    const close = await mount({ ...Greeter.program, name: 'listed' }, '/listed/:id', 'standup')
     const names = await Effect.runPromise(
       Effect.flatMap(PageHost, page => page.names).pipe(Effect.provide(host!)),
     )
     assert.deepStrictEqual(names, ['listed'])
+    const pages = await Effect.runPromise(Effect.flatMap(PageHost, page => page.pages).pipe(Effect.provide(host!)))
+    assert.deepStrictEqual(pages, [{ name: 'listed', paths: ['/listed/:id'], owner: 'standup' }])
     await close()
   })
 })

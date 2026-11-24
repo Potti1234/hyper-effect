@@ -28,7 +28,19 @@ export class PageConflict extends Data.TaggedError('PageConflict')<{
   readonly message: string
 }> {}
 
-type Mounted = Readonly<{ id: number; name: string; routes: ReadonlyArray<PageRoute> }>
+/** Who mounts pages from here on, for `PageHost.pages`: an extension's
+ *  loader provides its id. Null (the default) for pages without one. */
+export const PageOwner = Context.Reference<string | null>('@hyper-effect/core/PageOwner', { defaultValue: () => null })
+
+/** A page served by the host. */
+export type HostedPage = Readonly<{
+  name: string
+  /** The paths it answers GET requests on, as patterns (`/issue/:id`). */
+  paths: ReadonlyArray<string>
+  owner: string | null
+}>
+
+type Mounted = Readonly<{ id: number; name: string; owner: string | null; routes: ReadonlyArray<PageRoute> }>
 
 export class PageHost extends Context.Service<
   PageHost,
@@ -41,6 +53,8 @@ export class PageHost extends Context.Service<
     ) => Effect.Effect<void, PageConflict, Scope.Scope | R | KeyValueStore.KeyValueStore>
     /** The names of the pages served now, the newest of each name. */
     readonly names: Effect.Effect<ReadonlyArray<string>>
+    /** The pages served now, with their paths and owners. */
+    readonly pages: Effect.Effect<ReadonlyArray<HostedPage>>
   }
 >()('@hyper-effect/core/PageHost') {}
 
@@ -97,7 +111,8 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
       mount: (program, options = {}) =>
         Effect.gen(function* () {
           const routes = yield* pageRoutes(program, options)
-          const entry: Mounted = { id: nextId++, name: program.name, routes }
+          const owner = yield* PageOwner
+          const entry: Mounted = { id: nextId++, name: program.name, owner, routes }
           yield* serve([...mounted, entry]).pipe(
             Effect.mapError(message => new PageConflict({ page: program.name, message })),
           )
@@ -122,6 +137,17 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
           )
         }),
       names: Effect.sync(() => served.map(page => page.name)),
+      pages: Effect.sync(() =>
+        served.map(
+          (page): HostedPage => ({
+            name: page.name,
+            paths: page.routes
+              .filter(route => route.method === 'GET' && !String(route.path).startsWith('/_hyper/'))
+              .map(route => String(route.path)),
+            owner: page.owner,
+          }),
+        ),
+      ),
     })
   }),
 )
