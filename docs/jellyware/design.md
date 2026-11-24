@@ -97,6 +97,8 @@ Built (2026-11-24), with two changes to the sketch above:
 
 The issue page offers the slot `issue.sidebar` under its properties (`ISSUE_SIDEBAR` and `issueSidebar` in `examples/jellyware/src/app/extensions.ts`). It renders links only to paths of the app. `extensions/related` shows open issues that share a label and an action "Mark urgent"; the browser check opens an issue, clicks it, and sees the priority change on another person's open copy of the issue.
 
+Since 2026-11-24 the issue lists offer two more ([open-work.md](open-work.md#slots-and-what-can-be-customized-built-2026-11-24)): `issues.palette`, the same `SlotContent` shown as entries of the command palette, and `issues.badges`, a second kind of entry (`Contributions.badges`) for short labels on rows and board cards.
+
 ## 5. Stylesheets
 
 Tailwind runs once when an app starts (`"css": "tailwindcss -i src/styles.css -o public/styles.css"` in `apps/starter/package.json`), and `Options.stylesheets` is a fixed list rendered into the page head. Classes used only in an extension have no CSS.

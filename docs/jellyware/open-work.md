@@ -142,9 +142,23 @@ Every id and path in it is taken, so the agent picks free ones instead of guessi
 - **Seen so far:** the first run with the guide ("a card with the comment count, and a button for administrators only") passed every check in one attempt, in 51 seconds, twice. It used the slot, a new card id and `roles: ['admin']` as the guide describes them. The runs before the guide took two attempts each; two runs are not a measurement.
 - **What it misses:** it lists what runs, so an extension whose folder has no valid manifest does not appear. It says nothing about the app's stores and domain beyond what the instructions name; the agent still reads those files.
 
+## Slots and what can be customized (built 2026-11-24)
+
+The issue lists offer two slots besides the issue page's cards (`issue.sidebar`):
+
+- **`issues.palette`: entries in the command palette** (Ctrl+K). The content is the same `SlotContent` as a card: each action becomes an entry that runs its command, each item with a path of the app an entry that opens it, and the title is the group. The context names the selected issue (j/k), so this is also where actions on the selected row go: a group titled with its identifier is listed with the issue's own actions ("Change status of ENG-11…", "Mark ENG-11 urgent"). The palette reads the slot only while it is open. The browser posts the entry's value; update runs only entries the open palette offers.
+- **`issues.badges`: badges on rows and board cards.** A new kind of entry in the registry, `Contributions.badges({ slot, id, content })`, whose stream gives `{ target, label, tone }` per issue; `slotBadges` merges every extension's badges. Rows and cards are shared regions (rendered once for everyone), so badges have no member in their context and look the same to everyone.
+
+References: `extensions/related` adds "Mark <issue> urgent" for the selected issue, `extensions/standup` an entry "Open Stand-up", and the new `extensions/stale` a badge "Stale 12d" on open issues unchanged for a number of days (a setting, 10 by default).
+
+**What can be customized.** As bb lists a plugin's capabilities, `/extensions` shows "What you can customize": every way an extension can change the app (pages, cards on an issue, the command palette, badges, settings), where each shows, a link to see it, which extensions fill it now, and for administrators an example prompt that fills the prompt field. Each loaded extension lists what it adds ("Adds: page /standup · sidebar entry "Stand-up" · command palette"). The list is one constant, `CUSTOMIZATIONS` in `examples/jellyware/src/app/extensions.ts`, which the agent's guide reads too; a new slot goes there. What fills each comes from `Contributions.inventoryChanges` and `PageHost.pages`.
+
+- **Not built:** a board column slot (a summary per column), and acting on several selected rows at once: the list selects one row at a time.
+- **Badges cost per session:** every open list runs each extension's badge stream once. A badge stream that recomputes all issues on every workspace change (as `stale` does) is fine at this size; a large workspace would share one stream per extension.
+
 ## The list
 
-Everything left, by size. Items 1 to 6 were done on 2026-11-24, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 7 were done on 2026-11-24, in this order; the sections above describe what each does and what it misses.
 
 ### Small fixes that close known risks
 
@@ -158,11 +172,12 @@ Everything left, by size. Items 1 to 6 were done on 2026-11-24, in this order; t
 
 | 6 | **A generated guide for the agent.** The loaded extensions, their pages, slots, commands and settings, written for pi before each run, as bb's `plugin-commands-skill.ts` does. | Done: [the agent's guide](#the-agents-guide-built-2026-11-24) |
 
+| 7 | **More slots.** Actions on the selected row and entries in the command palette, badges on list rows and board cards, and a list on `/extensions` of everything that can be customized. | Done: [slots and what can be customized](#slots-and-what-can-be-customized-built-2026-11-24) |
+
 ### Medium
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 7 | **More slots.** Actions on selected rows of the issue list, the command palette, the board. | Extensions can add to only one place of the app's pages today | [design.md](design.md#4-slots-in-existing-pages) |
 | 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | A typecheck does not show a page that renders the wrong thing | [design.md](design.md#6-the-agent-pipeline), [prior-art.md](prior-art.md#agent-pipeline) |
 | 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per workspace or member (Graft realms). | Extensions that call other services need keys | [settings](#settings-for-extensions-built-2026-11-24) |
 | 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs queue or run side by side instead of one at a time. | [Events during a swap](#events-during-a-swap); a long run blocks the next | `packages/jellyware/src/changes.ts` |
