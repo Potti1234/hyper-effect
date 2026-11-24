@@ -1,6 +1,6 @@
 # Risks and open work
 
-What can go wrong with the extension system as built on the branch `jellyware` (2026-11-24), what limits each risk today, and what would remove it; then the design for extension settings, and the other work left for later.
+What can go wrong with the extension system as built on the branch `jellyware` (2026-11-24), what limits each risk today, and what would remove it; then how extension settings work and their risks, and the other work left for later.
 
 ## Risks
 
@@ -84,19 +84,29 @@ Extensions, runs and the stylesheet are files on the server's disk. Two servers 
 
 `@graftland/graft` 0.7.0 was released on 2026-11-16 and rewrote 0.6.0's API. It is pinned and used only through `packages/jellyware/src/graft.ts` ([graft.md](graft.md#decision)). Used so far: the graph, `mount` with `requires`, and mount states.
 
-## Later: settings for extensions
+## Settings for extensions (built 2026-11-24)
 
-An extension's settings are values an administrator changes while the app runs, such as how many related issues to show or which team a page is for. This is the part of Graft not used yet: a publication.
+An extension's settings are values people change while the app runs, such as how many related issues a card shows. For testing, every signed-in member may change them on `/extensions`.
 
-- **Declared in the manifest.** `extension.json` gets `settings`, a map from key to `{ type: 'string' | 'number' | 'boolean' | 'select', label, default, options?, secret? }`. The loader decodes it with a Schema.
-- **Stored in the app's store.** Values live under `jellyware/settings/<extension>/<key>` (the `KeyValueStore` the app already has), so they survive restarts and new versions of the extension.
-- **Given to the extension through Graft.** The loader publishes each extension's values with `Graft.publish(Settings(<id>), values)`; the extension requires its `Settings` key. Changing a value calls `publication.set`, and Graft rebuilds the extension with the new values, its pages and cards included; open pages reconnect as on a swap.
-- **Edited on `/extensions`.** A form per extension, built from the manifest: text, number, checkbox, select. Saving validates against the declared types.
-- **Secrets.** Values marked `secret` never go to a browser, are not copied into a run's stage, and are not shown to the agent; the form shows only whether one is set.
-- **Changes to the declaration.** A new key gets its default; a key that is gone is kept in the store but no longer published; a value whose type no longer fits falls back to the default and shows a warning.
-- **Later still:** settings per workspace or per member with Graft's realms (`isolate: [[Settings(<id>), '<workspace>']]`).
+- **Declared in the manifest.** `extension.json` has `settings`: per key a `type` (`string`, `number` with optional `min` and `max`, `boolean`, `select` with `options`), a `label`, a `default` and an optional `description` (`SettingSpec` in `packages/jellyware/src/settings.ts`).
+- **Stored in the app's store** under `jellyware/settings/<extension>` (the app's `KeyValueStore`, `.hyper-sessions/` in the example), so they survive restarts and new versions. Stored values that no longer fit their declaration fall back to the default; keys no longer declared are not given to the extension.
+- **Given to the extension while it is built** as `ExtensionSettings` (`settings.number('max')`, `string`, `boolean`).
+- **A change loads the extension again** with the new values, the way a change of its files does: the new version is mounted next to the running one and replaces it once it is built. When the extension fails with the new values, the running version stays, the old values are stored again, and the change is recorded as *put back* with the error. `Extensions.configure` in `packages/jellyware/src/loader.ts`.
+- **Undo.** Every change is kept in a history (`jellyware/settings-history`, the last 100). An applied change can be undone, newest first per extension, while the extension still has the values it set.
+- **Edited on `/extensions`:** a form per extension, built from the declaration; the history below the extensions, with undo.
 
-Open questions: whether a change of settings is a run (with undo), and who may change them.
+`extensions/related` declares a card title, how many issues it shows (1 to 20 by its declaration) and whether it offers "Mark urgent". It fails with more than 10, so "put back" can be tried; the browser check does, and sees another person's open issue page keep the earlier card.
+
+Not as designed above: the values are not a Graft publication. `publication.set` rebuilds the extension in place, so a value it fails with would take it down until someone puts the old value back. Loading a new version next to the running one keeps the extension running throughout, and the "put back" comes from the loader for free.
+
+Not built yet: secret settings (never sent to a browser, the stage or the agent), roles for who may change settings, and settings per workspace or member (Graft realms).
+
+### Risks of settings
+
+- **Everyone can change them** in the example, as asked for testing. A setting that controls what a command does, or what a card shows, changes it for everybody.
+- **A value can be wrong without failing.** "Put back" covers values the extension fails to build with; a value it accepts but that makes it show or do the wrong thing goes live. Undo covers that case by hand.
+- **Undo restores values, not data**, as with runs.
+- **Each change reloads the extension**, so open pages of the extension reconnect (as on any swap), and the swap risks above apply.
 
 ## Later: other work
 
