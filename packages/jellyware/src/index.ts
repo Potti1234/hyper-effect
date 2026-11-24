@@ -18,7 +18,9 @@ export {
   RunState,
   type Task,
   UndoRefused,
+  declaredMismatch,
   layer as changesLayer,
+  parseDeclared,
   type Options as ChangesOptions,
 } from './changes.ts'
 export {
@@ -41,7 +43,16 @@ export {
   SlotItem,
 } from './contributions.ts'
 export { DiffLine, FileDiff, diffFolders, diffLines } from './diff.ts'
-export { DEFAULT_GLOBALS, DEFAULT_NAMES, type ImportRules, type NamedImports, checkFolder, findProblems, importCheck } from './imports.ts'
+export {
+  DEFAULT_GLOBALS,
+  DEFAULT_NAMES,
+  type ImportRules,
+  type NamedImports,
+  checkFolder,
+  findProblems,
+  importCheck,
+  isTestFile,
+} from './imports.ts'
 export { type AppPage, type GuideInput, type GuideOptions, type SlotInfo, guide, renderGuide } from './guide.ts'
 export { graph, type Graph, type MountState, type Provided, type Requirement } from './graft.ts'
 export { ExtensionStatus, Extensions, Manifest, SettingsChange, layer, type Options } from './loader.ts'

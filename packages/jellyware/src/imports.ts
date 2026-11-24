@@ -50,7 +50,15 @@ export type ImportRules = Readonly<{
   /** Names refused wherever they appear, property names included; default
    *  `DEFAULT_NAMES`. */
   names?: ReadonlyArray<string>
+  /** Test files (`*.test.ts` and the like) may also import these, such as
+   *  the test runner; every other rule holds for them too. */
+  testAllow?: ReadonlyArray<string | NamedImports>
 }>
+
+const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/
+
+/** Whether a file of an extension is a test. */
+export const isTestFile = (path: string): boolean => TEST_FILE.test(path)
 
 export const DEFAULT_GLOBALS: ReadonlyArray<string> = [
   'process',
@@ -239,7 +247,8 @@ export const checkFolder = (folder: string, rules: ImportRules) =>
     for (const file of await listFiles(root)) {
       if (!SCRIPT.has(extname(file))) continue
       const path = join(root, file)
-      problems.push(...findProblems(await readFile(path, 'utf8'), path, root, rules))
+      const fileRules = isTestFile(file) ? { ...rules, allow: [...rules.allow, ...(rules.testAllow ?? [])] } : rules
+      problems.push(...findProblems(await readFile(path, 'utf8'), path, root, fileRules))
     }
     return problems
   })

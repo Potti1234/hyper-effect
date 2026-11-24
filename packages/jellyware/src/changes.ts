@@ -16,8 +16,12 @@ import { Extensions, Manifest } from './loader.ts'
    2. Snapshot: when the agent is done, the stage is copied once more. Every
       check and the install use this copy, so what was checked is what goes
       live.
-   3. Check: manifests, a scan for credentials, and the app's checks (its
-      typecheck). A failure goes back to the agent, a limited number of times.
+   3. Check: with `declaredChanges`, the agent's answer ends with a line
+      `Changed: <ids>` that must name exactly the extensions whose folders
+      differ (after Powermove); a mismatch goes back to the agent before
+      anything else is checked. Then manifests, a scan for credentials, and
+      the app's checks (its typecheck, the extensions' tests). A failure goes
+      back to the agent, a limited number of times.
    4. Install: refused if a live extension changed since the stage was made.
       The live folders of the changed extensions are copied to `before/`
       (the journal), then made equal to the snapshot, then loaded. An
@@ -146,7 +150,47 @@ export type Options<R = never> = Readonly<{
   /** Describes the app for the agent (`guide` in guide.ts); run when a run
    *  starts. */
   guide?: Effect.Effect<string, never, R>
+  /** Whether the agent's answer must end with `Changed: <ids>` (or
+   *  `Changed: none`) naming exactly the extensions it created, changed or
+   *  removed. The line is not kept in the run's summary. Default false. */
+  declaredChanges?: boolean
 }>
+
+const CHANGED_LINE = /^\s*changed:\s*(.*?)\s*\.?\s*$/i
+
+/** The extensions an answer's last `Changed:` line names, and the answer
+ *  without it; `declared` is null when there is no such line. */
+export const parseDeclared = (answer: string): Readonly<{ declared: ReadonlyArray<string> | null; summary: string }> => {
+  const lines = answer.trimEnd().split(/\r?\n/)
+  let index = lines.length - 1
+  while (index >= 0 && !CHANGED_LINE.test(lines[index] ?? '')) index--
+  if (index === -1) return { declared: null, summary: answer.trim() }
+  const list = CHANGED_LINE.exec(lines[index] ?? '')?.[1] ?? ''
+  const declared =
+    list.toLowerCase() === 'none' || list === ''
+      ? []
+      : [...new Set(list.split(/[,\s]+/).map(id => id.replace(/^[`'"]+|[`'"/]+$/g, '')).filter(id => id !== ''))].sort()
+  return { declared, summary: lines.filter((_, at) => at !== index).join('\n').trim() }
+}
+
+/** What to tell the agent when its `Changed:` line does not fit the
+ *  folders; null when it fits. */
+export const declaredMismatch = (declared: ReadonlyArray<string> | null, actual: ReadonlyArray<string>): string | null => {
+  const list = (ids: ReadonlyArray<string>) => (ids.length === 0 ? 'none' : ids.join(', '))
+  if (declared === null) {
+    return `End your answer with a line \`Changed: <ids>\` naming the extensions you created, changed or removed (\`Changed: none\` if none). The files show changes in: ${list(actual)}.`
+  }
+  const sorted = [...actual].sort()
+  if (declared.length === sorted.length && declared.every((id, at) => id === sorted[at])) return null
+  const missing = sorted.filter(id => !declared.includes(id))
+  const extra = declared.filter(id => !sorted.includes(id))
+  return [
+    `You said you changed ${list(declared)}, but the files show changes in ${list(sorted)}.`,
+    ...(missing.length === 0 ? [] : [`Changed but not named: ${missing.join(', ')}. If you did not mean to change them, put them back as they were.`]),
+    ...(extra.length === 0 ? [] : [`Named but unchanged: ${extra.join(', ')}. If you meant to change them, do it now.`]),
+    'Then answer again, ending with the corrected `Changed:` line.',
+  ].join('\n')
+}
 
 // CHECKS EVERY RUN GETS
 
@@ -361,7 +405,8 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           while (true) {
             run = { ...run, state: 'working', attempts: run.attempts + 1 }
             yield* save(run)
-            const summary = yield* options.agent.work({ prompt: run.prompt, stage, runDirectory, feedback, guide })
+            const answer: string = yield* options.agent.work({ prompt: run.prompt, stage, runDirectory, feedback, guide })
+            const { declared, summary } = options.declaredChanges === true ? parseDeclared(answer) : { declared: null, summary: answer }
             run = { ...run, summary, state: 'checking' }
             yield* save(run)
 
@@ -376,6 +421,16 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
             yield* Effect.promise(() => rm(snapshot, { recursive: true, force: true }))
             yield* Effect.promise(() => copyFolder(stage, snapshot))
             const changes = yield* diff(snapshot, baseline)
+            // Before anything else: does the agent know what it changed?
+            const mismatch: string | null =
+              options.declaredChanges === true ? declaredMismatch(declared, changes.map(change => change.id)) : null
+            if (mismatch !== null) {
+              if (run.attempts >= maxAttempts) {
+                return yield* save({ ...run, state: 'failed', changes, error: `The agent's account of its changes did not match:\n${mismatch}` })
+              }
+              feedback = mismatch
+              continue
+            }
             if (changes.length === 0) return yield* save({ ...run, state: 'unchanged', changes })
 
             if (options.review === true) {
