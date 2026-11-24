@@ -26,7 +26,7 @@ const relatedTo = (issue: Issue, issues: ReadonlyArray<Issue>, max: number): Rea
     .filter(other => other.id !== issue.id && !isClosed(other.status) && other.labelIds.some(id => issue.labelIds.includes(id)))
     .slice(0, max)
 
-const cardFor = (issueId: string, issues: ReadonlyArray<Issue>, options: Options): SlotContent => {
+export const cardFor = (issueId: string, issues: ReadonlyArray<Issue>, options: Options): SlotContent => {
   const issue = issues.find(candidate => candidate.id === issueId)
   if (issue === undefined) return { title: options.title, items: [], actions: [], note: null }
   const related = relatedTo(issue, issues, options.max)

@@ -7,6 +7,7 @@ export default defineConfig({
   },
   test: {
     name: 'jellyware-example',
-    include: ['test/**/*.test.ts'],
+    // The app's tests, and the tests extensions bring (run on every change too).
+    include: ['test/**/*.test.ts', 'extensions/**/*.test.ts'],
   },
 })

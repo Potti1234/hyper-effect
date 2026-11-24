@@ -37,5 +37,8 @@ export const importRules: ImportRules = {
     '=#app/store',
     '#app/view/*',
   ],
+  // Test files: the test runner, Foldkit's Story and Scene (in `foldkit`),
+  // serving a page over HTTP, and the seed data.
+  testAllow: ['@effect/vitest', '=vitest', '=@hyper-effect/core/testing', '=#app/seed'],
   deny: ['foldkit/http', 'foldkit/experimental', 'foldkit/devTools', 'foldkit/runtime'],
 }

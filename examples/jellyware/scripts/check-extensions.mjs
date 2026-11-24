@@ -17,7 +17,8 @@ import { chromium } from 'playwright'
    looks until Ada gives her the role.
 
    The last part changes the app by prompt on /extensions: a run waits for
-   review, Ada reads the diff and approves it. It needs the server started
+   review, Ada reads the diff and approves it; a change that fails the
+   typecheck or the extension's own tests fails. It needs the server started
    with JELLYWARE_AGENT=script (a scripted agent instead of pi); without
    it, that part is skipped.
 
@@ -307,6 +308,12 @@ try {
     const broken = await prompt("replace standup/page.ts :: export const PATH = '/standup' => export const PATH: number = '/standup'")
     check('a change that does not typecheck fails', broken.state === 'failed' && broken.text.includes('TS2322'), broken.state)
     check('and leaves the live extension alone', readFileSync(pageFile, 'utf8') === liveBefore)
+    const untested = await prompt('replace stale/extension.ts :: label: `Stale  => label: `Old ')
+    check(
+      'a change its extension’s own tests reject fails, with the failing test',
+      untested.state === 'failed' && untested.text.includes('Tests failed') && untested.text.includes("expected 'Old"),
+      untested.state,
+    )
   } else {
     console.log('SKIP changes by prompt (start the server with JELLYWARE_AGENT=script)')
   }

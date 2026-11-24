@@ -1,20 +1,21 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { Effect, Schema as S } from 'effect'
 
-import { type Agent, AgentError, type Check, type Task } from '@hyper-effect/jellyware'
+import { type Agent, AgentError, type Check, type Task, isTestFile } from '@hyper-effect/jellyware'
 
 import type { Guard } from '../pi-guard.ts'
 import { importRules } from './extension-rules.ts'
 
-/* The agent that changes this app's extensions, and the typecheck its work
-   must pass.
+/* The agent that changes this app's extensions, and the checks its work
+   must pass besides the import rules: the typecheck, and the extensions' own
+   tests.
 
    The agent is pi (https://github.com/badlogic/pi-mono), run once per
    attempt in print mode, in the run's stage folder, with file tools only
@@ -139,7 +140,8 @@ You change the extensions of a running hyper-effect app, a clone of Linear's iss
 - Extensions run inside the app's server, so a check refuses code that reaches beyond the app's services. Import only: ${allowedImports()}. Type-only imports (\`import type\`) of anything are fine. Do not use \`process\`, \`globalThis\`, \`require\`, \`eval\`, \`Function\`, \`fetch\`, \`WebSocket\`, \`import.meta\`, a computed \`import()\`, or Effect's \`Config\`/\`ConfigProvider\`.
 - Page \`name\`s and paths, command ids, sidebar entry ids and card ids must be new: the guide below lists every one in use, and which extension owns it.
 - Use Tailwind classes the app already uses where you can.
-- End with two or three sentences on what you changed.
+- Test what you build, in \`<id>/*.test.ts\` next to the code: a page's update with Foldkit's \`Story\` and its view with \`Scene\` (\`foldkit/test\`), pure functions (what a card or a badge shows) with plain assertions; data from \`#app/seed\`. Tests import from \`@effect/vitest\`. The app runs the tests of every extension you change and sends you the failures; they must pass. \`standup/page.test.ts\`, \`stale/extension.test.ts\` and \`related/extension.test.ts\` are references.
+- End with two or three sentences on what you changed, then a last line naming every extension folder you created, changed or removed: \`Changed: standup, related\` (or \`Changed: none\`). The app compares it with the files and asks again when they differ.
 `
 
 export type PiOptions = Readonly<{
@@ -240,19 +242,66 @@ export const typecheck = (appDirectory: string, workDirectory: string): Check =>
     }),
 })
 
+/** Environment variables the tests get: what Node and the test runner
+ *  need, none of the server's secrets. */
+const TEST_ENVIRONMENT = ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'windir', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE']
+
+/** Runs the tests (`*.test.ts`) of the changed extensions of a snapshot
+ *  with the app's test runner, in a child process whose environment holds
+ *  none of the server's variables. An extension without tests passes. */
+export const extensionTests = (appDirectory: string): Check => ({
+  name: 'Tests',
+  run: ({ snapshot, runDirectory, changed }) =>
+    Effect.gen(function* () {
+      const files = yield* Effect.promise(async () => {
+        const found: Array<string> = []
+        for (const id of changed) {
+          const entries = await readdir(join(snapshot, id), { recursive: true }).catch(() => [])
+          for (const entry of entries) if (isTestFile(entry)) found.push(join(snapshot, id, entry))
+        }
+        return found
+      })
+      if (files.length === 0) return
+      const slash = (path: string) => path.split('\\').join('/')
+      const config = join(runDirectory, 'vitest.config.mjs')
+      yield* Effect.promise(() =>
+        writeFile(
+          config,
+          `export default ${JSON.stringify({
+            resolve: { alias: { '@': slash(join(appDirectory, 'src')) } },
+            test: { name: 'extension-tests', root: slash(appDirectory), include: files.map(file => slash(relative(appDirectory, file))) },
+          })}\n`,
+        ),
+      )
+      // Its command-line entry (`bin`), which the package does not export.
+      const vitest = join(dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs')
+      const env: NodeJS.ProcessEnv = { NODE_ENV: 'test', NO_COLOR: '1', FORCE_COLOR: '0', CI: '1' }
+      for (const key of TEST_ENVIRONMENT) if (process.env[key] !== undefined) env[key] = process.env[key]
+      yield* runNode([vitest, 'run', '--config', config, '--root', appDirectory], { cwd: appDirectory, env, timeoutMs: 5 * 60 * 1000 }).pipe(
+        // Paths as the agent knows them: relative to its stage.
+        Effect.mapError(output => {
+          const prefixes = [resolve(snapshot), relative(appDirectory, snapshot)].flatMap(path => [`${path}\\`, `${slash(path)}/`])
+          return prefixes.reduce((text, prefix) => text.split(prefix).join(''), output).slice(-6000)
+        }),
+      )
+    }),
+})
+
 /** An agent without a model, for browser checks: a prompt
- *  `replace <file> :: <old> => <new>` replaces text in a stage file. */
+ *  `replace <file> :: <old> => <new>` replaces text in a stage file. Its
+ *  answer names the file's extension as changed. */
 export const scriptAgent: Agent = {
   work: ({ prompt, stage }) =>
     Effect.gen(function* () {
       const match = /^replace (\S+) :: ([\s\S]+?) => ([\s\S]*)$/.exec(prompt.trim())
-      if (match === null) return 'The script agent only knows `replace <file> :: <old> => <new>`.'
+      if (match === null) return 'The script agent only knows `replace <file> :: <old> => <new>`.\nChanged: none'
       const [, file = '', from = '', to = ''] = match
       const path = resolve(stage, file)
       if (!path.startsWith(resolve(stage))) return yield* Effect.fail(fail('The file must be in the stage.'))
+      const changed = `Changed: ${file.split('/')[0] ?? ''}`
       const text = yield* Effect.tryPromise({ try: () => readFile(path, 'utf8'), catch: () => fail(`No file ${file}.`) })
-      if (!text.includes(from)) return `${file} does not contain the text to replace.`
+      if (!text.includes(from)) return `${file} does not contain the text to replace.\n${changed}`
       yield* Effect.promise(() => writeFile(path, text.split(from).join(to)))
-      return `Replaced the text in ${file}.`
+      return `Replaced the text in ${file}.\n${changed}`
     }),
 }

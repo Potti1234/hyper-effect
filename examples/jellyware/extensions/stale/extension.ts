@@ -13,7 +13,7 @@ import { Workspace } from '#app/store'
 
 const DAY = 24 * 60 * 60 * 1000
 
-const staleBadges = (issues: ReadonlyArray<Issue>, now: number, days: number): ReadonlyArray<Badge> =>
+export const staleBadges = (issues: ReadonlyArray<Issue>, now: number, days: number): ReadonlyArray<Badge> =>
   issues
     .filter(issue => !isClosed(issue.status) && now - issue.updatedAt >= days * DAY)
     .map(issue => ({ target: issue.id, label: `Stale ${Math.floor((now - issue.updatedAt) / DAY)}d`, tone: 'warning' }))

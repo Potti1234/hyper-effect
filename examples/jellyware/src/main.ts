@@ -62,8 +62,9 @@ const Loaded = Jellyware.layer({
   Layer.provide(Jellyware.graph),
 )
 
-/** Changes by prompt: the agent works on a copy of extensions/; the import
- *  rules and the typecheck decide what may go live, an administrator reads
+/** Changes by prompt: the agent works on a copy of extensions/ and says
+ *  which extensions it changed; the import rules, the typecheck and the
+ *  extensions' own tests decide what may go live, an administrator reads
  *  the diff and approves it, and the loader builds it (/extensions). */
 const Changes = Jellyware.changesLayer({
   extensionsDirectory,
@@ -72,9 +73,11 @@ const Changes = Jellyware.changesLayer({
     process.env['JELLYWARE_AGENT'] === 'script'
       ? Agent.scriptAgent
       : Agent.piAgent({ appDirectory, repository: join(appDirectory, '..', '..'), agentDirectory: join(workDirectory, 'pi-agent') }),
-  checks: [Jellyware.importCheck(importRules), Agent.typecheck(appDirectory, workDirectory)],
+  checks: [Jellyware.importCheck(importRules), Agent.typecheck(appDirectory, workDirectory), Agent.extensionTests(appDirectory)],
   protectedDirectories: [join(appDirectory, 'src')],
   review: true,
+  // The agent's answer ends with `Changed: <ids>`, compared with the files.
+  declaredChanges: true,
   // What the app has now, for the agent: pages, slots, commands, settings.
   guide: Jellyware.guide({
     appPages: [
