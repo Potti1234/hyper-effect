@@ -19,12 +19,19 @@ Extension code runs in the server process. `requires` (`examples/jellyware/src/a
 - **What the check misses:** it reads what the code says. Code built to get around it can (a chain of property accesses on an allowed object that reaches a constructor, for example), and an allowed module that gains a dangerous export opens a hole until the rules name it. Extensions written by hand and loaded at start are not checked; only runs are.
 - **Removes it:** run each extension in a child process (`graft/node`, [design.md](design.md#8-trust)); it then gets only the services served to it.
 
-### Anyone signed in can change the app
+### Who may change the app (roles and review since 2026-11-24)
 
-In the example, every signed-in member can start a run on `/extensions` and undo runs. A prompt can ask for code that reads data the member may not see, or that sends it elsewhere.
+A prompt can ask for code that reads data the member may not see, or that sends it elsewhere. Until 2026-11-24 every signed-in member could start runs, undo them and change settings on `/extensions`.
 
-- **Limits today:** the example has no roles; it is a local demo.
-- **Removes it:** runs only for a role (administrators), and an approval step between "checked" and "installed" in which a person reads the diff of the snapshot.
+- **Limits today:**
+  - **Roles.** Members of the example have a role, `admin` or `member` (`Member.role` in `examples/jellyware/src/app/domain.ts`). Ada is the seeded administrator; a new name joins as a member. Only administrators prompt, approve, reject and undo runs, change settings, and give or take the role (the "People" list on `/extensions`); the workspace keeps at least one administrator. The workshop's update checks the role for every Message a browser posts, from the member as the server knows them. Members see the runs, their diffs and the extensions.
+  - **Review.** With `review: true` (`Changes` options, on in the example) a run whose checks pass waits in *Waiting for review*. Its live folders are copied to `before/` then, and the page shows a line diff of every changed file (`diff` in `packages/jellyware/src/diff.ts`, three lines of context, 400 lines per file at most). An administrator approves it, which installs it as before, or rejects it, which changes nothing. The run records who decided. A run waiting for review keeps waiting across restarts.
+- **What it misses:**
+  - The author may approve their own run; the point is that a person reads what the agent wrote, not only what they asked for. Requiring a second administrator is a check on `reviewer !== author` in the workshop.
+  - An extension that fails to build at approval is put back and the run fails; the agent is no longer asked to fix it, as it is without review. Run the prompt again.
+  - If a live extension changed while the run waited, approval fails, as an install did before.
+  - The diff shows code, and a reviewer can miss what it does. The import check and the typecheck ran before; the reviewer is the third line, not the only one.
+  - Roles live in the example's in-memory workspace: a restart brings back the seeded roles. Sign-in is still any name, so anyone who types "Ada" is the administrator. A real app takes roles from its identity provider.
 
 ### The agent can write outside its stage
 
@@ -69,11 +76,11 @@ Every load imports the extension's modules under a new URL. Node never frees a m
 
 A slot shows once every card in it has content (`Stream.zipLatestAll`). A card whose stream never emitted used to keep the whole slot empty. Since 2026-11-24 a card without content after `cardTimeout` (one second by default; `Contributions.make({ cardTimeout })`) shows as "Loading…" until its content comes, and the other cards show. On the issue page the first render waits 300 ms for the cards; the Subscription fills them in after that.
 
-### Commands trust the extension to check rights
+### Commands trust the extension to check rights (roles since 2026-11-24)
 
-The issue page runs only actions it shows (they are in its Model), so a browser cannot invent a command or its arguments. Whether the member may do what the command does is the command's own check, as `related.mark-urgent` checks that the issue exists. A command that does not check lets every member who sees the card do it.
+The issue page runs only actions it shows (they are in its Model), so a browser cannot invent a command or its arguments. Since 2026-11-24 a command can name the roles that may run it (`roles: ['admin']` in `Contributions.command`). The registry asks the app for the member's roles (`Contributions.make({ rolesOf })`, `rolesOf` in `examples/jellyware/src/app/extensions.ts`) before `run`, and leaves the action out of the cards of a member without one. Without `rolesOf`, commands that name roles are refused to everyone.
 
-- **Removes it:** commands that declare the role they need, checked by the host before `run`.
+- **What is left:** a command without `roles` runs for every member who sees the card, and finer checks (may this member change this issue) are still the command's own. The agent's instructions and `AGENTS.md` tell it to name `roles` for commands only administrators should run. An extension runs in the server and can call `Contributions.run` with any member id; only a child process per extension (item 11) stops that.
 
 ### Undo restores files, not data
 
@@ -99,7 +106,7 @@ Extensions, runs and the stylesheet are files on the server's disk. Two servers 
 
 ## Settings for extensions (built 2026-11-24)
 
-An extension's settings are values people change while the app runs, such as how many related issues a card shows. For testing, every signed-in member may change them on `/extensions`.
+An extension's settings are values people change while the app runs, such as how many related issues a card shows. Administrators change them on `/extensions` (every signed-in member could until roles came, 2026-11-24).
 
 - **Declared in the manifest.** `extension.json` has `settings`: per key a `type` (`string`, `number` with optional `min` and `max`, `boolean`, `select` with `options`), a `label`, a `default` and an optional `description` (`SettingSpec` in `packages/jellyware/src/settings.ts`).
 - **Stored in the app's store** under `jellyware/settings/<extension>` (the app's `KeyValueStore`, `.hyper-sessions/` in the example), so they survive restarts and new versions. Stored values that no longer fit their declaration fall back to the default; keys no longer declared are not given to the extension.
@@ -112,18 +119,18 @@ An extension's settings are values people change while the app runs, such as how
 
 Not as designed above: the values are not a Graft publication. `publication.set` rebuilds the extension in place, so a value it fails with would take it down until someone puts the old value back. Loading a new version next to the running one keeps the extension running throughout, and the "put back" comes from the loader for free.
 
-Not built yet: secret settings (never sent to a browser, the stage or the agent), roles for who may change settings, and settings per workspace or member (Graft realms).
+Not built yet: secret settings (never sent to a browser, the stage or the agent) and settings per workspace or member (Graft realms).
 
 ### Risks of settings
 
-- **Everyone can change them** in the example, as asked for testing. A setting that controls what a command does, or what a card shows, changes it for everybody.
+- **A change reaches everybody.** A setting that controls what a command does, or what a card shows, changes it for every member; only administrators can make it.
 - **A value can be wrong without failing.** "Put back" covers values the extension fails to build with; a value it accepts but that makes it show or do the wrong thing goes live. Undo covers that case by hand.
 - **Undo restores values, not data**, as with runs.
 - **Each change reloads the extension**, so open pages of the extension reconnect (as on any swap), and the swap risks above apply.
 
 ## The list
 
-Everything left, by size. Items 1 to 4 were done on 2026-11-24, in this order; the risks above describe what each does and what it misses.
+Everything left, by size. Items 1 to 5 were done on 2026-11-24, in this order; the risks above describe what each does and what it misses.
 
 ### Small fixes that close known risks
 
@@ -133,12 +140,12 @@ Everything left, by size. Items 1 to 4 were done on 2026-11-24, in this order; t
 | 2 | **Import allow-list in the checks.** Allowed modules and names, no process or network globals, no computed `import()`, no `import.meta`. | Done: [extensions run with the app's rights](#extensions-run-with-the-apps-rights) |
 | 3 | **pi writes only in the stage.** A pi extension that checks every tool call. | Done: [the agent can write outside its stage](#the-agent-can-write-outside-its-stage) |
 | 4 | **A time limit per slot card.** A slow card shows "Loading…"; the others show. | Done: [one slow card](#one-slow-card-hides-the-others-in-its-slot-fixed) |
+| 5 | **Roles and approval.** Runs and settings only for administrators. An approval step between "checked" and "installed" in which a person reads the diff. Commands that name the roles that may run them, checked by the registry before `run`. | Done: [who may change the app](#who-may-change-the-app-roles-and-review-since-2026-11-24), [commands](#commands-trust-the-extension-to-check-rights-roles-since-2026-11-24) |
 
 ### Medium
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 5 | **Roles and approval.** Runs and settings only for administrators. An approval step between "checked" and "installed" in which a person reads the diff. Commands that declare the role they need, checked by the host before `run`. | [Anyone signed in can change the app](#anyone-signed-in-can-change-the-app), [commands trust the extension](#commands-trust-the-extension-to-check-rights) | above |
 | 6 | **A generated guide for the agent.** The loaded extensions, their slots, commands and settings, written for pi before each run, as bb's `plugin-commands-skill.ts` does. Fewer wrong guesses, fewer retries. | Runs took two attempts each so far | [prior-art.md](prior-art.md#agent-pipeline) |
 | 7 | **More slots.** Actions on selected rows of the issue list, the command palette, the board. | Extensions can add to only one place of the app's pages today | [design.md](design.md#4-slots-in-existing-pages) |
 | 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | A typecheck does not show a page that renders the wrong thing | [design.md](design.md#6-the-agent-pipeline), [prior-art.md](prior-art.md#agent-pipeline) |
