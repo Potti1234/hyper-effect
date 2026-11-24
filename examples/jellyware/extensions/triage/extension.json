@@ -1,0 +1,6 @@
+{
+  "id": "triage",
+  "name": "Triage",
+  "version": "1",
+  "entry": "extension.ts"
+}
