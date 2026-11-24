@@ -1,0 +1,16 @@
+{
+  "id": "progress",
+  "name": "Progress",
+  "version": "1",
+  "entry": "extension.ts",
+  "description": "Live completed-ticket charts over time, with team and date-range filters.",
+  "settings": {
+    "defaultDays": {
+      "type": "number",
+      "label": "Default time range (days)",
+      "default": 30,
+      "min": 7,
+      "max": 180
+    }
+  }
+}
