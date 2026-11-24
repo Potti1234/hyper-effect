@@ -156,9 +156,20 @@ References: `extensions/related` adds "Mark <issue> urgent" for the selected iss
 - **Not built:** a board column slot (a summary per column), and acting on several selected rows at once: the list selects one row at a time.
 - **Badges cost per session:** every open list runs each extension's badge stream once. A badge stream that recomputes all issues on every workspace change (as `stale` does) is fine at this size; a large workspace would share one stream per extension.
 
+## Better checks (built 2026-11-24)
+
+A typecheck does not show a page that renders the wrong thing, and an agent can change more than it meant to. Two checks were added.
+
+- **The extensions' own tests.** An extension brings tests next to its code (`extensions/<id>/*.test.ts`): Story for a page's update, Scene for its view, plain assertions for what a card or badge shows. `npm test` runs them with the app's tests (`vitest.config.ts` includes `extensions/`), and every run runs the tests of the extensions it changed on its snapshot (`extensionTests` in `examples/jellyware/src/app/agent.ts`, after the import rules and the typecheck). The failures go back to the agent with paths as it knows them. `standup/page.test.ts`, `stale/extension.test.ts` and `related/extension.test.ts` are references, and the agent's instructions ask for tests.
+  - Tests are agent code that runs before anyone reviewed it. They follow the import rules (no `process`, `node:fs`, `fetch` …) with the test runner, `@hyper-effect/core/testing` and `#app/seed` added for test files (`testAllow`), and they run in a child process whose environment has none of the server's variables, only `PATH` and the like (checked: a test reading `APP_SECRET` gets nothing).
+  - An extension without tests passes; a page whose tests do not cover what was asked for passes too. The reviewer still reads the diff.
+- **The agent says what it changed** (after Powermove). With `declaredChanges` (`Changes` options, on in the example) the agent's answer ends with `Changed: <ids>` (or `Changed: none`). It must name exactly the extension folders that differ from the live ones; otherwise nothing is checked or installed and the agent hears what does not fit ("Changed but not named: stray. If you did not mean to change them, put them back as they were."). This counts as an attempt. The line is not kept in the run's summary. `parseDeclared` and `declaredMismatch` in `packages/jellyware/src/changes.ts`.
+
+- **Seen so far:** asked for "a blue badge 'Unassigned' on open issues nobody is assigned to", pi wrote the extension and a test for every status with and without an assignee, named it in its `Changed:` line, and passed every check in one attempt, in 68 seconds. The browser check runs a scripted change that breaks `stale`'s test; the run fails after three attempts with the failing assertion.
+
 ## The list
 
-Everything left, by size. Items 1 to 7 were done on 2026-11-24, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 8 were done on 2026-11-24, in this order; the sections above describe what each does and what it misses.
 
 ### Small fixes that close known risks
 
@@ -174,11 +185,12 @@ Everything left, by size. Items 1 to 7 were done on 2026-11-24, in this order; t
 
 | 7 | **More slots.** Actions on the selected row and entries in the command palette, badges on list rows and board cards, and a list on `/extensions` of everything that can be customized. | Done: [slots and what can be customized](#slots-and-what-can-be-customized-built-2026-11-24) |
 
+| 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | Done: [better checks](#better-checks-built-2026-11-24) |
+
 ### Medium
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | A typecheck does not show a page that renders the wrong thing | [design.md](design.md#6-the-agent-pipeline), [prior-art.md](prior-art.md#agent-pipeline) |
 | 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per workspace or member (Graft realms). | Extensions that call other services need keys | [settings](#settings-for-extensions-built-2026-11-24) |
 | 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs queue or run side by side instead of one at a time. | [Events during a swap](#events-during-a-swap); a long run blocks the next | `packages/jellyware/src/changes.ts` |
 

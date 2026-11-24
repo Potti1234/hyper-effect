@@ -140,7 +140,7 @@ The pipeline is `Changes` in `packages/jellyware/src/changes.ts`; it knows nothi
 | Record | `run.json` with the folder hash before and after per extension; undo restores `before/` only while the live hash equals the run's |
 | Recovery | At start, a run left `installing` is put back; one left `working` or `checking` is marked failed |
 
-Not built from the list above: a trial mount in a separate Graft graph (the live load with its put-back does that job), Story and Scene tests of the extension, and comparing the agent's declared changes with the hash difference.
+Not built from the list above: a trial mount in a separate Graft graph (the live load with its put-back does that job). The extension's own Story and Scene tests and the comparison of the agent's declared changes with the hash difference were built on 2026-11-24 ([open-work.md](open-work.md#better-checks-built-2026-11-24)).
 
 Credentials: pi and the Codex CLI sign in to the same ChatGPT account, and refreshing an OAuth token rotates it. pi's own stored Codex credential had stopped refreshing for that reason (`pi auth check` reported `invalid`). The agent therefore copies the Codex CLI's current access token into the app's own pi folder (`.jellyware/pi-agent`, ignored by git) before each attempt, without a refresh token, and starts only while the token has an hour left.
 
