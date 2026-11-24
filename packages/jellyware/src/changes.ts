@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path'
 
 import { Clock, Context, Data, Effect, Layer, Queue, Schema as S, Semaphore, type Stream, SubscriptionRef } from 'effect'
 
+import { type FileDiff, diffFolders } from './diff.ts'
 import { copyFolder, hashFolder, listFiles, listFolders, mirrorFolder } from './files.ts'
 import { Extensions, Manifest } from './loader.ts'
 
@@ -22,12 +23,17 @@ import { Extensions, Manifest } from './loader.ts'
       (the journal), then made equal to the snapshot, then loaded. An
       extension that fails to build is put back, and the failure goes back
       to the agent like a failed check.
+      With `review` on, a run whose checks pass waits in `review` instead:
+      the live folders are copied to `before/` at once, `diff` shows what
+      would change, and a person approves (install as above) or rejects it.
+      An extension that fails to build at approval is put back and the run
+      fails; the agent is done by then.
    5. Record: the run keeps, per extension, the hash before and after. Undo
       puts `before/` back, only while the live folder still has the hash the
       run produced; otherwise newer runs must be undone first.
 
-   A run interrupted while installing is put back when the app starts.
-   Runs are kept in `<workDirectory>/runs/<id>/run.json`. */
+   A run interrupted while installing is put back when the app starts; a
+   run waiting for review keeps waiting. Runs are kept in `<workDirectory>/runs/<id>/run.json`. */
 
 export const ChangeAction = S.Literals(['added', 'changed', 'removed'])
 
@@ -40,7 +46,18 @@ export const ChangedExtension = S.Struct({
 })
 export type ChangedExtension = typeof ChangedExtension.Type
 
-export const RunState = S.Literals(['queued', 'working', 'checking', 'installing', 'installed', 'unchanged', 'failed', 'undone'])
+export const RunState = S.Literals([
+  'queued',
+  'working',
+  'checking',
+  'review',
+  'installing',
+  'installed',
+  'unchanged',
+  'failed',
+  'rejected',
+  'undone',
+])
 export type RunState = typeof RunState.Type
 
 export const Run = S.Struct({
@@ -56,6 +73,8 @@ export const Run = S.Struct({
   /** The agent's last answer. */
   summary: S.NullOr(S.String),
   error: S.NullOr(S.String),
+  /** Who approved or rejected it; null without review. */
+  reviewer: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
 })
 export type Run = typeof Run.Type
 
@@ -83,6 +102,9 @@ export type Check = Readonly<{
 
 export class UndoRefused extends Data.TaggedError('UndoRefused')<{ readonly message: string }> {}
 
+/** An approval, rejection or diff asked for a run that does not have one. */
+export class ReviewRefused extends Data.TaggedError('ReviewRefused')<{ readonly message: string }> {}
+
 export class Changes extends Context.Service<
   Changes,
   {
@@ -92,6 +114,14 @@ export class Changes extends Context.Service<
     /** Queues a run; runs go one at a time. Answers with its id. */
     readonly start: (prompt: string, author: string) => Effect.Effect<string>
     readonly undo: (runId: string) => Effect.Effect<void, UndoRefused>
+    /** Installs a run waiting for review. The run then is `installed`, or
+     *  `failed` when a live extension changed meanwhile or an extension
+     *  fails to build (put back). */
+    readonly approve: (runId: string, reviewer: string) => Effect.Effect<void, ReviewRefused>
+    readonly reject: (runId: string, reviewer: string) => Effect.Effect<void, ReviewRefused>
+    /** What a run changes (in review) or changed: the live files before it
+     *  against its snapshot. */
+    readonly diff: (runId: string) => Effect.Effect<ReadonlyArray<FileDiff>, ReviewRefused>
   }
 >()('@hyper-effect/jellyware/Changes') {}
 
@@ -107,6 +137,9 @@ export type Options = Readonly<{
   protectedDirectories?: ReadonlyArray<string>
   /** How often the agent may work on one run, retries included. Default 3. */
   attempts?: number
+  /** Whether a checked run waits for a person to approve it. Default
+   *  false: it installs at once. */
+  review?: boolean
 }>
 
 // CHECKS EVERY RUN GETS
@@ -176,7 +209,7 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
       const installLock = yield* Semaphore.make(1)
       const directoryOf = (id: string) => join(runsDirectory, id)
 
-      const FINAL: ReadonlySet<RunState> = new Set(['installed', 'unchanged', 'failed', 'undone'])
+      const FINAL: ReadonlySet<RunState> = new Set(['installed', 'unchanged', 'failed', 'rejected', 'undone'])
       const save = (next: Run) =>
         Effect.gen(function* () {
           const run =
@@ -214,6 +247,8 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           yield* Effect.logWarning(`jellyware: run ${run.id} was interrupted while installing; put back`)
         } else if (run.state === 'queued' || run.state === 'working' || run.state === 'checking') {
           run = { ...run, state: 'failed', error: 'Interrupted: the app stopped during the run.' }
+        } else if (run.state === 'review' && (yield* Effect.promise(() => hashFolder(join(directoryOf(id), 'snapshot')))) === null) {
+          run = { ...run, state: 'failed', error: 'The snapshot to review is gone.' }
         }
         yield* save(run)
       }
@@ -249,9 +284,9 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           }
         })
 
-      /** Installs the snapshot's changes; fails with the build error when an
-       *  extension does not build (after putting everything back). */
-      const install = (run: Run, snapshot: string, baseline: Hashes, changes: ReadonlyArray<ChangedExtension>) =>
+      /** Copies the live folders of `changes` to the run's `before/`; fails
+       *  when one changed since the run started. */
+      const keepBefore = (run: Run, baseline: Hashes, changes: ReadonlyArray<ChangedExtension>) =>
         Effect.gen(function* () {
           const ids = changes.map(change => change.id)
           const now = yield* hashesOf(live, ids)
@@ -259,7 +294,7 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           if (moved.length > 0) {
             return yield* Effect.fail({
               retry: false,
-              message: `Refused: ${moved.join(', ')} changed while the agent worked. Run the prompt again.`,
+              message: `Refused: ${moved.join(', ')} changed since this run started. Run the prompt again.`,
             })
           }
           const runDirectory = directoryOf(run.id)
@@ -267,6 +302,14 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           for (const id of ids) {
             yield* Effect.promise(() => copyFolder(join(live, id), join(runDirectory, 'before', id)))
           }
+        })
+
+      /** Installs the snapshot's changes; fails with the build error when an
+       *  extension does not build (after putting everything back). */
+      const install = (run: Run, snapshot: string, baseline: Hashes, changes: ReadonlyArray<ChangedExtension>) =>
+        Effect.gen(function* () {
+          const ids = changes.map(change => change.id)
+          yield* keepBefore(run, baseline, changes)
           yield* save({ ...run, state: 'installing', changes })
           for (const id of ids) {
             yield* Effect.promise(() => mirrorFolder(join(snapshot, id), join(live, id)))
@@ -316,6 +359,21 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
             const changes = yield* diff(snapshot, baseline)
             if (changes.length === 0) return yield* save({ ...run, state: 'unchanged', changes })
 
+            if (options.review === true) {
+              const refused = yield* check(snapshot, runDirectory, changes).pipe(
+                Effect.mapError(message => ({ retry: true, message })),
+                Effect.flatMap(() => installLock.withPermits(1)(keepBefore(run, baseline, changes))),
+                Effect.as(null),
+                Effect.catch(error => Effect.succeed(error)),
+              )
+              if (refused === null) return yield* save({ ...run, state: 'review', changes })
+              if (!refused.retry || run.attempts >= maxAttempts) {
+                return yield* save({ ...run, state: 'failed', changes, error: refused.message })
+              }
+              feedback = refused.message
+              continue
+            }
+
             const problem: { retry: boolean; message: string } | null = yield* check(snapshot, runDirectory, changes).pipe(
               Effect.flatMap(() => installLock.withPermits(1)(install(run, snapshot, baseline, changes))),
               Effect.as(null),
@@ -338,6 +396,16 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           ),
           Effect.withSpan('jellyware.run', { attributes: { run: queued.id } }),
         )
+
+      const inReview = (runId: string) =>
+        Effect.gen(function* () {
+          const run = (yield* SubscriptionRef.get(runs)).find(other => other.id === runId)
+          if (run === undefined) return yield* new ReviewRefused({ message: `No run ${runId}.` })
+          if (run.state !== 'review') {
+            return yield* new ReviewRefused({ message: `Only a run waiting for review can be approved or rejected; this one is ${run.state}.` })
+          }
+          return run
+        })
 
       // One run at a time, in the order they were started.
       const queue = yield* Queue.unbounded<Run>()
@@ -362,6 +430,7 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
               changes: [],
               summary: null,
               error: null,
+              reviewer: null,
             }
             yield* save(run)
             yield* Queue.offer(queue, run)
@@ -386,6 +455,38 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
               yield* save({ ...run, state: 'undone' })
             }),
           ),
+        approve: (runId, reviewer) =>
+          installLock.withPermits(1)(
+            Effect.gen(function* () {
+              const run = yield* inReview(runId)
+              const baseline: Hashes = new Map(run.changes.map(change => [change.id, change.before]))
+              const reviewed: Run = { ...run, reviewer }
+              const problem = yield* install(reviewed, join(directoryOf(run.id), 'snapshot'), baseline, run.changes).pipe(
+                Effect.as(null),
+                Effect.catch(error => Effect.succeed(error.message)),
+              )
+              yield* save(problem === null ? { ...reviewed, state: 'installed' } : { ...reviewed, state: 'failed', error: problem })
+            }),
+          ),
+        reject: (runId, reviewer) =>
+          installLock.withPermits(1)(
+            Effect.gen(function* () {
+              const run = yield* inReview(runId)
+              yield* save({ ...run, state: 'rejected', reviewer })
+            }),
+          ),
+        diff: runId =>
+          Effect.gen(function* () {
+            const run = (yield* SubscriptionRef.get(runs)).find(other => other.id === runId)
+            if (run === undefined) return yield* new ReviewRefused({ message: `No run ${runId}.` })
+            const before = join(directoryOf(run.id), 'before')
+            if (run.changes.length === 0 || (yield* Effect.promise(() => stat(before).then(() => true, () => false))) === false) {
+              return yield* new ReviewRefused({ message: 'This run has no changes to show.' })
+            }
+            return yield* Effect.promise(() =>
+              diffFolders(before, join(directoryOf(run.id), 'snapshot'), run.changes.map(change => change.id)),
+            )
+          }),
       })
     }),
   )

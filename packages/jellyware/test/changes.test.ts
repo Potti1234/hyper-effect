@@ -189,7 +189,7 @@ describe('changes', () => {
             return 'Renamed.'
           })
           assert.strictEqual(conflict.state, 'failed')
-          assert.include(conflict.error ?? '', 'changed while the agent worked')
+          assert.include(conflict.error ?? '', 'changed since this run started')
         })
       }).pipe(Effect.scoped),
     )
