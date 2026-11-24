@@ -128,9 +128,23 @@ Not built yet: secret settings (never sent to a browser, the stage or the agent)
 - **Undo restores values, not data**, as with runs.
 - **Each change reloads the extension**, so open pages of the extension reconnect (as on any swap), and the swap risks above apply.
 
+## The agent's guide (built 2026-11-24)
+
+Before each run the app writes a guide to what it has now and appends it to pi's instructions (after bb's generated plugin-commands skill). `guide` in `packages/jellyware/src/guide.ts` makes it from the running app, not from the files:
+
+- **Pages** with their paths: the app's own (the app names them, `appPages`) and every page the page host serves, with the extension that mounted it.
+- **Slots** the app's pages offer, with where they show, how to add a card and what its context holds (the app describes them, `slotsForGuide` in `examples/jellyware/src/app/extensions.ts`), and the cards in each now.
+- **Commands** and who may run them; **sidebar entries** with their links.
+- **Per extension:** name, version, state, description, what it adds, its settings with their types and values, and the error of one that failed.
+
+Every id and path in it is taken, so the agent picks free ones instead of guessing. To credit each thing to its extension, the loader provides the extension's id while it builds it: `CurrentExtension` for the registry (`Contributions.inventory`), and core's `PageOwner` for the page host (`PageHost.pages`).
+
+- **Seen so far:** the first run with the guide ("a card with the comment count, and a button for administrators only") passed every check in one attempt, in 51 seconds, twice. It used the slot, a new card id and `roles: ['admin']` as the guide describes them. The runs before the guide took two attempts each; two runs are not a measurement.
+- **What it misses:** it lists what runs, so an extension whose folder has no valid manifest does not appear. It says nothing about the app's stores and domain beyond what the instructions name; the agent still reads those files.
+
 ## The list
 
-Everything left, by size. Items 1 to 5 were done on 2026-11-24, in this order; the risks above describe what each does and what it misses.
+Everything left, by size. Items 1 to 6 were done on 2026-11-24, in this order; the sections above describe what each does and what it misses.
 
 ### Small fixes that close known risks
 
@@ -142,11 +156,12 @@ Everything left, by size. Items 1 to 5 were done on 2026-11-24, in this order; t
 | 4 | **A time limit per slot card.** A slow card shows "Loading…"; the others show. | Done: [one slow card](#one-slow-card-hides-the-others-in-its-slot-fixed) |
 | 5 | **Roles and approval.** Runs and settings only for administrators. An approval step between "checked" and "installed" in which a person reads the diff. Commands that name the roles that may run them, checked by the registry before `run`. | Done: [who may change the app](#who-may-change-the-app-roles-and-review-since-2026-11-24), [commands](#commands-trust-the-extension-to-check-rights-roles-since-2026-11-24) |
 
+| 6 | **A generated guide for the agent.** The loaded extensions, their pages, slots, commands and settings, written for pi before each run, as bb's `plugin-commands-skill.ts` does. | Done: [the agent's guide](#the-agents-guide-built-2026-11-24) |
+
 ### Medium
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 6 | **A generated guide for the agent.** The loaded extensions, their slots, commands and settings, written for pi before each run, as bb's `plugin-commands-skill.ts` does. Fewer wrong guesses, fewer retries. | Runs took two attempts each so far | [prior-art.md](prior-art.md#agent-pipeline) |
 | 7 | **More slots.** Actions on selected rows of the issue list, the command palette, the board. | Extensions can add to only one place of the app's pages today | [design.md](design.md#4-slots-in-existing-pages) |
 | 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | A typecheck does not show a page that renders the wrong thing | [design.md](design.md#6-the-agent-pipeline), [prior-art.md](prior-art.md#agent-pipeline) |
 | 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per workspace or member (Graft realms). | Extensions that call other services need keys | [settings](#settings-for-extensions-built-2026-11-24) |

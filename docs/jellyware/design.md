@@ -117,7 +117,7 @@ Taken from Powermove ([prior-art.md](prior-art.md#agent-pipeline)), with hyper-e
 5. **Load** with the registry swap from part 2, then watch a stabilization window: if the mount goes `Failed`, restore `before/` automatically.
 6. **Record** the run as a change set with the hashes before and after. Undoing it restores `before/` only while the live tree still has the hash the run produced.
 
-Failures go back to the agent with the report, a limited number of times. The hyper-effect skill is the authoring guide; a generated skill lists the installed extensions, their commands and their slots, as bb's `plugin-commands-skill.ts` does.
+Failures go back to the agent with the report, a limited number of times. The hyper-effect skill is the authoring guide; a generated skill lists the installed extensions, their commands and their slots, as bb's `plugin-commands-skill.ts` does (built as the agent's guide, [open-work.md](open-work.md#the-agents-guide-built-2026-11-24)).
 
 ### What is built (2026-11-23)
 
