@@ -11,9 +11,13 @@ import { chromium } from 'playwright'
    open, and the extension unloaded and loaded again while another person's
    page shows the sidebar.
 
-   The last part changes the app by prompt on /extensions. It needs the
-   server started with JELLYWARE_AGENT=script (a scripted agent instead of
-   pi); without it, that part is skipped.
+   Then roles on /extensions: Ada administers, Grace only looks until Ada
+   gives her the role.
+
+   The last part changes the app by prompt on /extensions: a run waits for
+   review, Ada reads the diff and approves it. It needs the server started
+   with JELLYWARE_AGENT=script (a scripted agent instead of pi); without
+   it, that part is skipped.
 
    It edits extensions/standup/ and puts the files back when it ends.
 
@@ -186,6 +190,22 @@ try {
     check('on the other person’s page too', await until(grace.page, () => document.querySelector('#card-related h3')?.textContent === 'Related'))
   }
 
+  // ROLES
+  await grace.page.goto(`${base}/extensions`)
+  await grace.page.waitForSelector('#workshop-members')
+  check(
+    'a member sees who may change the app, and no prompt',
+    (await grace.page.textContent('#workshop-form')).includes('Only administrators') && (await grace.page.locator('#workshop-prompt').count()) === 0,
+  )
+  check('nor settings buttons', (await grace.page.locator('#workshop-extensions button[id^="settings-"]').count()) === 0)
+  await ada.page.goto(`${base}/extensions`)
+  await ada.page.waitForSelector('#role-grace')
+  await ada.page.click('#role-grace')
+  check('an administrator gives the role, and the member’s open page follows', await until(grace.page, () => document.querySelector('#workshop-prompt') !== null))
+  check('with the settings buttons', await until(grace.page, () => document.querySelector('#settings-related') !== null))
+  await ada.page.click('#role-grace')
+  check('and takes it back', await until(grace.page, () => document.querySelector('#workshop-prompt') === null))
+
   // CHANGES BY PROMPT
   if (process.env.JELLYWARE_AGENT === 'script') {
     await ada.page.goto(`${base}/extensions`)
@@ -198,18 +218,38 @@ try {
       await ada.page.waitForFunction(count => document.querySelectorAll('#workshop-runs article').length > count, before, { timeout: TIMEOUT })
       const id = await ada.page.evaluate(() => document.querySelector('#workshop-runs article').id)
       await ada.page.waitForFunction(
-        selector => ['installed', 'failed', 'unchanged'].includes(document.querySelector(selector)?.dataset.state),
+        selector => ['review', 'installed', 'failed', 'unchanged'].includes(document.querySelector(selector)?.dataset.state),
         `#${id}`,
         { timeout: RUN_TIMEOUT },
       )
       return { id, state: await ada.page.getAttribute(`#${id}`, 'data-state'), text: await ada.page.textContent(`#${id}`) }
     }
     const daily = await prompt("replace standup/extension.ts :: label: 'Stand-up' => label: 'Daily'")
-    check('a prompt goes live', daily.state === 'installed', daily.state)
+    check('a checked prompt waits for review', daily.state === 'review', daily.state)
+    const runId = daily.id.slice(4)
+    check(
+      'with the diff of what it changes',
+      await until(
+        ada.page,
+        selector => {
+          const diff = document.querySelector(selector)
+          return diff?.querySelector('[data-file="standup/extension.ts"]') !== null && /\+ .*Daily/.test(diff?.textContent ?? '')
+        },
+        `#diff-${runId}`,
+      ),
+    )
+    check('nothing is live before approval', [...(await grace.page.$$eval('#sidebar a', links => links.map(link => link.textContent)))].includes('Stand-up'))
+    await ada.page.click(`#approve-${runId}`)
+    check('approval installs it', await until(ada.page, selector => document.querySelector(selector)?.dataset.state === 'installed', `#${daily.id}`))
+    check('and names who approved', (await ada.page.textContent(`#${daily.id}`)).includes('approved by Ada'))
     check('and changes another person’s open page', await until(grace.page, () => [...document.querySelectorAll('#sidebar a')].some(link => link.textContent === 'Daily')))
-    await ada.page.click(`#undo-${daily.id.slice(4)}`)
+    await ada.page.click(`#undo-${runId}`)
     check('undo takes it back', await until(ada.page, selector => document.querySelector(selector)?.dataset.state === 'undone', `#${daily.id}`))
     check('on the other person’s page too', await until(grace.page, () => [...document.querySelectorAll('#sidebar a')].some(link => link.textContent === 'Stand-up')))
+    const rejected = await prompt("replace standup/extension.ts :: label: 'Stand-up' => label: 'Never'")
+    await ada.page.click(`#reject-${rejected.id.slice(4)}`)
+    check('a rejected run changes nothing', await until(ada.page, selector => document.querySelector(selector)?.dataset.state === 'rejected', `#${rejected.id}`))
+    check('and stays out of the sidebar', ![...(await grace.page.$$eval('#sidebar a', links => links.map(link => link.textContent)))].includes('Never'))
     const liveBefore = readFileSync(pageFile, 'utf8')
     const broken = await prompt("replace standup/page.ts :: export const PATH = '/standup' => export const PATH: number = '/standup'")
     check('a change that does not typecheck fails', broken.state === 'failed' && broken.text.includes('TS2322'), broken.state)

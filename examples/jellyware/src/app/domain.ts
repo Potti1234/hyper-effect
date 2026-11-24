@@ -48,9 +48,15 @@ export const priorityRank = (priority: Priority): number => (priority === 0 ? 5 
 
 // MEMBERS, TEAMS, LABELS
 
+/** Administrators change the app: they prompt and review changes, undo
+ *  them, change extension settings, and give others the role. */
+export const Role = S.Literals(['admin', 'member'])
+export type Role = typeof Role.Type
+
 export const Member = S.Struct({
   id: S.String,
   name: S.String,
+  role: Role,
   /** A Tailwind background class from AVATAR_COLORS. */
   color: S.String,
   /** Their theme choice, applied to every page they have open. */

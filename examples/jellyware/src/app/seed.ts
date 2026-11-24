@@ -1,15 +1,16 @@
 import type { Activity, Comment, Issue, Member, Priority, Status, TeamKey } from './domain'
 
 /* Seed data: six people, two teams and about forty issues, as a small product
-   team's tracker would look on a Tuesday. Times are relative to `now`. */
+   team's tracker would look on a Tuesday. Times are relative to `now`. Ada
+   administers the app; everyone who signs in with a new name is a member. */
 
 export const SEED_MEMBERS: ReadonlyArray<Member> = [
-  { id: 'ada', name: 'Ada Lovelace', color: 'bg-indigo-500', isDark: false },
-  { id: 'grace', name: 'Grace Hopper', color: 'bg-emerald-500', isDark: false },
-  { id: 'linus', name: 'Linus Torvalds', color: 'bg-amber-500', isDark: false },
-  { id: 'margaret', name: 'Margaret Hamilton', color: 'bg-rose-500', isDark: false },
-  { id: 'alan', name: 'Alan Turing', color: 'bg-sky-500', isDark: false },
-  { id: 'katherine', name: 'Katherine Johnson', color: 'bg-violet-500', isDark: false },
+  { id: 'ada', name: 'Ada Lovelace', role: 'admin', color: 'bg-indigo-500', isDark: false },
+  { id: 'grace', name: 'Grace Hopper', role: 'member', color: 'bg-emerald-500', isDark: false },
+  { id: 'linus', name: 'Linus Torvalds', role: 'member', color: 'bg-amber-500', isDark: false },
+  { id: 'margaret', name: 'Margaret Hamilton', role: 'member', color: 'bg-rose-500', isDark: false },
+  { id: 'alan', name: 'Alan Turing', role: 'member', color: 'bg-sky-500', isDark: false },
+  { id: 'katherine', name: 'Katherine Johnson', role: 'member', color: 'bg-violet-500', isDark: false },
 ]
 
 type Row = readonly [

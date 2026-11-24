@@ -9,6 +9,7 @@ import {
   type IssuePatch,
   type Member,
   type NewIssue,
+  type Role,
   type TeamKey,
   labelById,
   priorityLabel,
@@ -47,6 +48,9 @@ export class Workspace extends Context.Service<
     readonly comment: (issueId: string, body: string, authorId: string) => Effect.Effect<Comment, IssueNotFound>
     readonly remove: (id: string) => Effect.Effect<void, IssueNotFound>
     readonly setTheme: (memberId: string, isDark: boolean) => Effect.Effect<void>
+    /** Gives a member a role; only an administrator may, and the workspace
+     *  keeps at least one. */
+    readonly setRole: (memberId: string, role: Role, actorId: string) => Effect.Effect<void, InvalidChange>
   }
 >()('linear/Workspace') {
   static readonly layer = Layer.effect(
@@ -129,6 +133,7 @@ export class Workspace extends Context.Service<
             const member: Member = {
               id: memberId,
               name: name.trim(),
+              role: 'member',
               color: AVATAR_COLORS[current.members.length % AVATAR_COLORS.length] ?? 'bg-slate-500',
               isDark: false,
             }
@@ -193,6 +198,19 @@ export class Workspace extends Context.Service<
               { ...current, members: current.members.map(member => (member.id === memberId ? { ...member, isDark } : member)) },
             ] as const),
           ),
+        setRole: (memberId, role, actorId) =>
+          modify(current => {
+            const actor = current.members.find(member => member.id === actorId)
+            if (actor?.role !== 'admin') return Effect.fail(new InvalidChange({ reason: 'Only administrators give roles.' }))
+            if (!current.members.some(member => member.id === memberId)) {
+              return Effect.fail(new InvalidChange({ reason: 'No such member.' }))
+            }
+            const members = current.members.map(member => (member.id === memberId ? { ...member, role } : member))
+            if (!members.some(member => member.role === 'admin')) {
+              return Effect.fail(new InvalidChange({ reason: 'The workspace needs at least one administrator.' }))
+            }
+            return Effect.succeed([undefined, { ...current, members }] as const)
+          }),
         remove: issueId =>
           modify(current =>
             current.issues.some(issue => issue.id === issueId)

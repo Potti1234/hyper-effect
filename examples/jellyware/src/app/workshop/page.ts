@@ -4,19 +4,25 @@ import type { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { defineMessageUnion } from 'foldkit/message'
 
 import { type Program, memoizeLast, region } from '@hyper-effect/core'
-import { Changes, type Contributions, ExtensionStatus, Extensions, Run, SettingsChange } from '@hyper-effect/jellyware'
+import { Changes, type Contributions, type DiffLine, ExtensionStatus, Extensions, FileDiff, Run, SettingsChange } from '@hyper-effect/jellyware'
 
 import { renderTextarea } from '@/lib/textarea'
 import { cn } from '@/lib/utils'
 import { button } from '@/ui/button'
 
-import { Shell, frame, loadShell, shellChanges } from '../extensions'
-import { type Workspace } from '../store'
+import { Member, Role } from '../domain'
+import { Shell, frame, isAdmin, loadShell, shellChanges } from '../extensions'
+import { Workspace } from '../store'
 
-/* The workshop: change the app by prompting an agent, follow each run, undo
-   it, see which extensions are loaded, and change their settings (with undo;
-   a change an extension fails with is put back). Every signed-in member may
-   start and undo runs and change settings. */
+/* The workshop: change the app by prompting an agent, read what a run would
+   change and approve or reject it, follow each run, undo it, see which
+   extensions are loaded, and change their settings (with undo; a change an
+   extension fails with is put back).
+
+   Administrators do all of that and give others the role; members see the
+   runs, their changes and the extensions. update checks the role for every
+   Message a browser posts, from the member as the server knows them (the
+   shell's Subscription keeps it current). */
 
 export const PATH = '/extensions'
 
@@ -31,11 +37,18 @@ export const Model = S.Struct({
   runs: S.Array(Run),
   extensions: S.Array(ExtensionStatus),
   settingsChanges: S.Array(SettingsChange),
+  members: S.Array(Member),
+  /** What runs change, by run id: the runs in review and those in `shown`. */
+  diffs: S.Record(S.String, S.Array(FileDiff)),
+  /** Runs not in review whose changes the member opened. */
+  shown: S.Array(S.String),
   prompt: S.String,
   editing: S.NullOr(Editing),
   notice: S.NullOr(S.String),
 })
 export type Model = typeof Model.Type
+
+const admin = (model: Model) => isAdmin(model.shell.me)
 
 // MESSAGE
 
@@ -43,7 +56,14 @@ export const Message = defineMessageUnion({
   ChangedPrompt: { text: S.String },
   SubmittedPrompt: {},
   ClickedUndo: { runId: S.String },
+  ClickedApprove: { runId: S.String },
+  ClickedReject: { runId: S.String },
+  ClickedShowChanges: { runId: S.String },
+  ClickedHideChanges: { runId: S.String },
+  ClickedSetRole: { memberId: S.String, role: Role },
   GotShell: { shell: Shell },
+  GotMembers: { members: S.Array(Member) },
+  GotDiffs: { diffs: S.Record(S.String, S.Array(FileDiff)) },
   GotRuns: { runs: S.Array(Run) },
   GotExtensions: { extensions: S.Array(ExtensionStatus) },
   GotSettingsChanges: { changes: S.Array(SettingsChange) },
@@ -57,12 +77,21 @@ export const Message = defineMessageUnion({
   SucceededStart: {},
   SucceededUndo: {},
   FailedUndo: { message: S.String },
+  SucceededReview: {},
+  FailedReview: { message: S.String },
+  SucceededRole: {},
+  FailedRole: { message: S.String },
 })
 export type Message = typeof Message.Type
 
 export const ClientMessage = S.Union([
   Message.SubmittedPrompt,
   Message.ClickedUndo,
+  Message.ClickedApprove,
+  Message.ClickedReject,
+  Message.ClickedShowChanges,
+  Message.ClickedHideChanges,
+  Message.ClickedSetRole,
   Message.ClickedEditSettings,
   Message.ClickedCancelSettings,
   Message.ClickedToggleSetting,
@@ -87,6 +116,36 @@ export const UndoRun = Command.define('Workshop.UndoRun', {
     Changes.use(changes => changes.undo(runId)).pipe(
       Effect.as(Message.SucceededUndo()),
       Effect.catchTag('UndoRefused', error => Effect.succeed(Message.FailedUndo({ message: error.message }))),
+    ),
+})
+
+export const Approve = Command.define('Workshop.Approve', {
+  args: { runId: S.String, reviewer: S.String },
+  messages: [Message.SucceededReview, Message.FailedReview],
+  execute: ({ runId, reviewer }) =>
+    Changes.use(changes => changes.approve(runId, reviewer)).pipe(
+      Effect.as(Message.SucceededReview()),
+      Effect.catchTag('ReviewRefused', error => Effect.succeed(Message.FailedReview({ message: error.message }))),
+    ),
+})
+
+export const Reject = Command.define('Workshop.Reject', {
+  args: { runId: S.String, reviewer: S.String },
+  messages: [Message.SucceededReview, Message.FailedReview],
+  execute: ({ runId, reviewer }) =>
+    Changes.use(changes => changes.reject(runId, reviewer)).pipe(
+      Effect.as(Message.SucceededReview()),
+      Effect.catchTag('ReviewRefused', error => Effect.succeed(Message.FailedReview({ message: error.message }))),
+    ),
+})
+
+export const SetRole = Command.define('Workshop.SetRole', {
+  args: { memberId: S.String, role: Role, actorId: S.String },
+  messages: [Message.SucceededRole, Message.FailedRole],
+  execute: ({ memberId, role, actorId }) =>
+    Workspace.use(workspace => workspace.setRole(memberId, role, actorId)).pipe(
+      Effect.as(Message.SucceededRole()),
+      Effect.catchTag('InvalidChange', error => Effect.succeed(Message.FailedRole({ message: error.reason }))),
     ),
 })
 
@@ -123,6 +182,7 @@ type Flags = Readonly<{
   runs: ReadonlyArray<Run>
   extensions: ReadonlyArray<ExtensionStatus>
   settingsChanges: ReadonlyArray<SettingsChange>
+  members: ReadonlyArray<Member>
 }>
 
 export const init = (flags: Flags): Update.Return<Model, Message> => ({
@@ -131,6 +191,9 @@ export const init = (flags: Flags): Update.Return<Model, Message> => ({
     runs: flags.runs,
     extensions: flags.extensions,
     settingsChanges: flags.settingsChanges,
+    members: flags.members,
+    diffs: {},
+    shown: [],
     prompt: '',
     editing: null,
     notice: null,
@@ -139,14 +202,26 @@ export const init = (flags: Flags): Update.Return<Model, Message> => ({
 
 // UPDATE
 
-type UpdateReturn = Update.Return<Model, Message, Changes | Extensions>
+type UpdateReturn = Update.Return<Model, Message, Changes | Extensions | Workspace>
+
+/** Runs whose changes can be shown: those that got as far as review or
+ *  install. */
+const HAS_DIFF: ReadonlySet<Run['state']> = new Set(['review', 'installed', 'undone', 'rejected', 'failed'])
+
+const runWith = (model: Model, runId: string, states: ReadonlySet<Run['state']>) =>
+  model.runs.find(run => run.id === runId && states.has(run.state) && run.changes.length > 0)
+
+const REVIEW: ReadonlySet<Run['state']> = new Set(['review'])
+const INSTALLED: ReadonlySet<Run['state']> = new Set(['installed'])
 
 export const update = (model: Model, message: Message): UpdateReturn =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({
       ChangedPrompt: ({ text }) => ({ model: { ...model, prompt: text } }),
+      // Every Message a browser posts that changes the app checks the role.
       SubmittedPrompt: () => {
+        if (!admin(model)) return { model }
         const prompt = model.prompt.trim()
         if (prompt === '') return { model: { ...model, notice: 'Describe the change first.' } }
         return {
@@ -156,15 +231,36 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       },
       // Posted by a browser: only a run that exists and is installed.
       ClickedUndo: ({ runId }) =>
-        model.runs.some(run => run.id === runId && run.state === 'installed')
+        admin(model) && runWith(model, runId, INSTALLED) !== undefined
           ? { model: { ...model, notice: null }, commands: [UndoRun({ runId })] }
           : { model },
-      GotShell: ({ shell }) => ({ model: { ...model, shell } }),
+      ClickedApprove: ({ runId }) =>
+        admin(model) && runWith(model, runId, REVIEW) !== undefined
+          ? { model: { ...model, notice: null }, commands: [Approve({ runId, reviewer: model.shell.me.name })] }
+          : { model },
+      ClickedReject: ({ runId }) =>
+        admin(model) && runWith(model, runId, REVIEW) !== undefined
+          ? { model: { ...model, notice: null }, commands: [Reject({ runId, reviewer: model.shell.me.name })] }
+          : { model },
+      ClickedShowChanges: ({ runId }) =>
+        runWith(model, runId, HAS_DIFF) !== undefined && !model.shown.includes(runId)
+          ? { model: { ...model, shown: [...model.shown, runId] } }
+          : { model },
+      ClickedHideChanges: ({ runId }) => ({ model: { ...model, shown: model.shown.filter(id => id !== runId) } }),
+      ClickedSetRole: ({ memberId, role }) =>
+        admin(model) && memberId !== model.shell.me.id && model.members.some(member => member.id === memberId)
+          ? { model: { ...model, notice: null }, commands: [SetRole({ memberId, role, actorId: model.shell.me.id })] }
+          : { model },
+      // A member who loses the role mid-edit loses the open form.
+      GotShell: ({ shell }) => ({ model: { ...model, shell, editing: isAdmin(shell.me) ? model.editing : null } }),
+      GotMembers: ({ members }) => ({ model: { ...model, members } }),
+      GotDiffs: ({ diffs }) => ({ model: { ...model, diffs } }),
       GotRuns: ({ runs }) => ({ model: { ...model, runs } }),
       GotExtensions: ({ extensions }) => ({ model: { ...model, extensions } }),
       GotSettingsChanges: ({ changes }) => ({ model: { ...model, settingsChanges: changes } }),
       // Posted by a browser: only an extension with settings.
       ClickedEditSettings: ({ extension }) => {
+        if (!admin(model)) return { model }
         const found = model.extensions.find(other => other.id === extension)
         if (found === undefined || found.settings.length === 0) return { model }
         const values = Object.fromEntries(found.settings.map(field => [field.key, String(field.value)]))
@@ -190,20 +286,24 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       // The values are checked against the extension's declaration by
       // `configure`; what a browser sends here is only text.
       SubmittedSettings: () =>
-        model.editing === null
+        model.editing === null || !admin(model)
           ? { model }
           : {
               model: { ...model, editing: null, notice: 'Loading the extension with the new settings…' },
               commands: [Configure({ extension: model.editing.extension, values: model.editing.values, author: model.shell.me.name })],
             },
       ClickedUndoSettings: ({ changeId }) =>
-        model.settingsChanges.some(change => change.id === changeId && change.state === 'applied')
+        admin(model) && model.settingsChanges.some(change => change.id === changeId && change.state === 'applied')
           ? { model: { ...model, notice: null }, commands: [UndoSettings({ changeId })] }
           : { model },
       CompletedSettings: ({ message }) => ({ model: { ...model, notice: message } }),
       SucceededStart: () => ({ model }),
       SucceededUndo: () => ({ model }),
       FailedUndo: ({ message }) => ({ model: { ...model, notice: message } }),
+      SucceededReview: () => ({ model }),
+      FailedReview: ({ message }) => ({ model: { ...model, notice: message } }),
+      SucceededRole: () => ({ model }),
+      FailedRole: ({ message }) => ({ model: { ...model, notice: message } }),
     }),
   )
 
@@ -213,6 +313,14 @@ export const update = (model: Model, message: Message): UpdateReturn =>
 const gotRuns = memoizeLast((runs: ReadonlyArray<Run>) => Message.GotRuns({ runs }))
 const gotExtensions = memoizeLast((extensions: ReadonlyArray<ExtensionStatus>) => Message.GotExtensions({ extensions }))
 const gotSettingsChanges = memoizeLast((changes: ReadonlyArray<SettingsChange>) => Message.GotSettingsChanges({ changes }))
+const gotMembers = memoizeLast((members: ReadonlyArray<Member>) => Message.GotMembers({ members }))
+
+/** The runs whose diffs the page shows, sorted. */
+const diffIds = (model: Model) =>
+  model.runs
+    .filter(run => run.state === 'review' || (model.shown.includes(run.id) && HAS_DIFF.has(run.state)))
+    .map(run => run.id)
+    .sort()
 
 export const subscriptions = Subscription.make<Model, Message, Workspace | Contributions | Changes | Extensions>()(entry => ({
   shell: entry(
@@ -237,6 +345,42 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Contr
         Stream.unwrap(Extensions.use(extensions => Effect.succeed(extensions.changes.pipe(Stream.map(gotExtensions))))),
     },
   ),
+  members: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(
+          Workspace.use(workspace =>
+            Effect.succeed(
+              workspace.changes.pipe(
+                Stream.map(state => state.members),
+                Stream.changes,
+                Stream.map(gotMembers),
+              ),
+            ),
+          ),
+        ),
+    },
+  ),
+  // Read once per set of runs: a run's files do not change once checked.
+  diffs: entry(
+    { runIds: S.Array(S.String) },
+    {
+      modelToDependencies: model => ({ runIds: diffIds(model) }),
+      dependenciesToStream: ({ runIds }) =>
+        Stream.fromEffect(
+          Changes.use(changes =>
+            Effect.forEach(runIds, runId =>
+              changes.diff(runId).pipe(
+                Effect.orElseSucceed((): ReadonlyArray<FileDiff> => []),
+                Effect.map(files => [runId, files] as const),
+              ),
+            ),
+          ),
+        ).pipe(Stream.map(pairs => Message.GotDiffs({ diffs: Object.fromEntries(pairs) }))),
+    },
+  ),
   settingsChanges: entry(
     {},
     {
@@ -253,10 +397,12 @@ const STATE_LABEL: Readonly<Record<Run['state'], string>> = {
   queued: 'Queued',
   working: 'Agent working',
   checking: 'Checking',
+  review: 'Waiting for review',
   installing: 'Installing',
   installed: 'Live',
   unchanged: 'No change',
   failed: 'Failed',
+  rejected: 'Rejected',
   undone: 'Undone',
 }
 
@@ -264,10 +410,12 @@ const STATE_CLASS: Readonly<Record<Run['state'], string>> = {
   queued: 'bg-muted text-muted-foreground',
   working: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
   checking: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+  review: 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
   installing: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
   installed: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
   unchanged: 'bg-muted text-muted-foreground',
   failed: 'bg-destructive/10 text-destructive',
+  rejected: 'bg-muted text-muted-foreground',
   undone: 'bg-muted text-muted-foreground',
 }
 
@@ -310,8 +458,72 @@ const promptForm = (model: Model, h: HtmlBuilder<Message>): Html =>
     ],
   )
 
-const runView = (run: Run, h: HtmlBuilder<Message>): Html =>
-  h.article(
+/** In place of the prompt form for members. */
+const membersNote = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const admins = model.members.filter(isAdmin).map(member => member.name)
+  return h.div(
+    [h.Id('workshop-form'), h.Class('rounded-lg border border-dashed px-3.5 py-3 text-[13px] text-muted-foreground')],
+    [
+      h.p([h.Id('workshop-members-note')], [
+        `Only administrators change the app. Ask ${admins.join(', ') || 'an administrator'} for a change, or for the role.`,
+      ]),
+      h.p([h.Id('workshop-notice'), h.Class('text-[12px] text-destructive'), h.AriaLive('polite')], [model.notice ?? '']),
+    ],
+  )
+}
+
+const LINE_CLASS: Readonly<Record<DiffLine['kind'], string>> = {
+  same: 'px-2',
+  added: 'bg-emerald-500/10 px-2 text-emerald-800 dark:text-emerald-300',
+  removed: 'bg-destructive/10 px-2 text-destructive',
+  gap: 'bg-muted/60 px-2 text-muted-foreground italic',
+}
+
+const LINE_PREFIX = { same: '  ', added: '+ ', removed: '- ', gap: '⋯ ' } as const
+
+const diffView = (runId: string, files: ReadonlyArray<FileDiff> | undefined, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Id(`diff-${runId}`), h.Class('mt-2 flex flex-col gap-2')],
+    files === undefined
+      ? [h.p([h.Class('text-[12px] text-muted-foreground')], ['Reading the changes…'])]
+      : files.length === 0
+        ? [h.p([h.Class('text-[12px] text-muted-foreground')], ['No file changes to show.'])]
+        : files.map(file =>
+            h.div(
+              [h.Class('overflow-hidden rounded-md border'), h.DataAttribute('file', `${file.extension}/${file.path}`)],
+              [
+                h.div(
+                  [h.Class('flex items-center gap-2 border-b bg-muted/40 px-2 py-1 text-[11px]')],
+                  [
+                    h.span([h.Class('min-w-0 truncate font-mono')], [`${file.extension}/${file.path}`]),
+                    h.span([h.Class('text-muted-foreground')], [file.action]),
+                    h.span([h.Class('flex-1')], []),
+                    h.span([h.Class('tabular-nums text-emerald-700 dark:text-emerald-400')], [`+${file.added}`]),
+                    h.span([h.Class('tabular-nums text-destructive')], [`−${file.removed}`]),
+                  ],
+                ),
+                file.lines === null
+                  ? h.p([h.Class('px-2 py-1 text-[11px] text-muted-foreground')], ['Not a text file.'])
+                  : h.pre(
+                      [h.Class('max-h-96 overflow-auto py-1 font-mono text-[11px] leading-[1.5]')],
+                      [
+                        ...file.lines.map(line => h.div([h.Class(LINE_CLASS[line.kind])], [LINE_PREFIX[line.kind] + line.text])),
+                        ...(file.truncated ? [h.div([h.Class(LINE_CLASS.gap)], ['⋯ the rest of this file is left out'])] : []),
+                      ],
+                    ),
+              ],
+            ),
+          ),
+  )
+
+const smallButton = (id: string, label: string, message: Message, variant: 'default' | 'outline' | 'ghost', h: HtmlBuilder<Message>): Html =>
+  button({ id, children: [label], variant, size: 'sm', class: 'h-7 text-[12px]', onClick: message }, h)
+
+const runView = (run: Run, model: Model, h: HtmlBuilder<Message>): Html => {
+  // A decided run's changes open on request; a run in review shows them.
+  const canShow = run.state !== 'review' && HAS_DIFF.has(run.state) && run.changes.length > 0
+  const canUndo = run.state === 'installed' && admin(model)
+  return h.article(
     [h.Id(`run-${run.id}`), h.Class('rounded-lg border bg-card p-3'), h.DataAttribute('state', run.state)],
     [
       h.div(
@@ -323,7 +535,11 @@ const runView = (run: Run, h: HtmlBuilder<Message>): Html =>
       ),
       h.p(
         [h.Class('mt-1 text-[11px] text-muted-foreground')],
-        [`${run.author} · ${time(run.startedAt)} UTC${run.attempts > 1 ? ` · ${run.attempts} attempts` : ''}`],
+        [
+          `${run.author} · ${time(run.startedAt)} UTC${run.attempts > 1 ? ` · ${run.attempts} attempts` : ''}${
+            run.reviewer === null ? '' : ` · ${run.state === 'rejected' ? 'rejected' : 'approved'} by ${run.reviewer}`
+          }`,
+        ],
       ),
       ...(run.changes.length === 0
         ? []
@@ -337,28 +553,42 @@ const runView = (run: Run, h: HtmlBuilder<Message>): Html =>
       ...(run.error === null
         ? []
         : [h.pre([h.Class('mt-2 max-h-48 overflow-auto rounded bg-destructive/5 p-2 text-[11px] whitespace-pre-wrap text-destructive')], [run.error])]),
-      ...(run.state === 'installed'
+      ...(run.state === 'review'
+        ? [
+            diffView(run.id, model.diffs[run.id], h),
+            admin(model)
+              ? h.div(
+                  [h.Class('mt-2 flex items-center justify-end gap-1.5')],
+                  [
+                    h.span([h.Class('flex-1 text-[11px] text-muted-foreground')], ['Read the changes, then decide. Nothing is live yet.']),
+                    smallButton(`reject-${run.id}`, 'Reject', Message.ClickedReject({ runId: run.id }), 'ghost', h),
+                    smallButton(`approve-${run.id}`, 'Approve and install', Message.ClickedApprove({ runId: run.id }), 'default', h),
+                  ],
+                )
+              : h.p([h.Class('mt-2 text-[11px] text-muted-foreground')], ['Waiting for an administrator to read and approve it.']),
+          ]
+        : []),
+      ...(canShow && model.shown.includes(run.id) ? [diffView(run.id, model.diffs[run.id], h)] : []),
+      ...(canShow || canUndo
         ? [
             h.div(
-              [h.Class('mt-2 flex justify-end')],
+              [h.Class('mt-2 flex justify-end gap-1.5')],
               [
-                button(
-                  {
-                    id: `undo-${run.id}`,
-                    children: ['Undo'],
-                    variant: 'outline',
-                    size: 'sm',
-                    class: 'h-7 text-[12px]',
-                    onClick: Message.ClickedUndo({ runId: run.id }),
-                  },
-                  h,
-                ),
+                ...(canShow
+                  ? [
+                      model.shown.includes(run.id)
+                        ? smallButton(`changes-${run.id}`, 'Hide changes', Message.ClickedHideChanges({ runId: run.id }), 'ghost', h)
+                        : smallButton(`changes-${run.id}`, 'Show changes', Message.ClickedShowChanges({ runId: run.id }), 'ghost', h),
+                    ]
+                  : []),
+                ...(canUndo ? [smallButton(`undo-${run.id}`, 'Undo', Message.ClickedUndo({ runId: run.id }), 'outline', h)] : []),
               ],
             ),
           ]
         : []),
     ],
   )
+}
 
 const describeValues = (values: Readonly<Record<string, string | number | boolean>>) =>
   Object.entries(values)
@@ -422,7 +652,12 @@ const settingsForm = (extension: ExtensionStatus, editing: Editing, h: HtmlBuild
     ],
   )
 
-const settingsHistory = (changes: ReadonlyArray<SettingsChange>, extensions: ReadonlyArray<ExtensionStatus>, h: HtmlBuilder<Message>): Html =>
+const settingsHistory = (
+  changes: ReadonlyArray<SettingsChange>,
+  extensions: ReadonlyArray<ExtensionStatus>,
+  canChange: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.section(
     [h.Id('workshop-settings-history'), h.Class('mt-6')],
     [
@@ -452,7 +687,7 @@ const settingsHistory = (changes: ReadonlyArray<SettingsChange>, extensions: Rea
                   ...(change.error === null
                     ? []
                     : [h.pre([h.Class('mt-1 max-h-24 overflow-auto text-[11px] whitespace-pre-wrap text-destructive')], [change.error])]),
-                  ...(change.state === 'applied'
+                  ...(change.state === 'applied' && canChange
                     ? [
                         h.div(
                           [h.Class('mt-1 flex justify-end')],
@@ -479,7 +714,7 @@ const settingsHistory = (changes: ReadonlyArray<SettingsChange>, extensions: Rea
     ],
   )
 
-const extensionRow = (extension: ExtensionStatus, editing: Editing | null, h: HtmlBuilder<Message>): Html =>
+const extensionRow = (extension: ExtensionStatus, editing: Editing | null, canChange: boolean, h: HtmlBuilder<Message>): Html =>
   h.li(
     [h.Id(`extension-${extension.id}`), h.Class('py-2'), h.DataAttribute('state', extension.state)],
     [
@@ -511,20 +746,59 @@ const extensionRow = (extension: ExtensionStatus, editing: Editing | null, h: Ht
                     [h.Class('min-w-0 flex-1 truncate text-[11px] text-muted-foreground')],
                     [describeValues(Object.fromEntries(extension.settings.map(field => [field.key, field.value])))],
                   ),
-                  button(
-                    {
-                      id: `settings-${extension.id}`,
-                      children: ['Settings'],
-                      variant: 'outline',
-                      size: 'sm',
-                      class: 'h-6 text-[11px]',
-                      onClick: Message.ClickedEditSettings({ extension: extension.id }),
-                    },
-                    h,
-                  ),
+                  ...(canChange
+                    ? [
+                        button(
+                          {
+                            id: `settings-${extension.id}`,
+                            children: ['Settings'],
+                            variant: 'outline',
+                            size: 'sm',
+                            class: 'h-6 text-[11px]',
+                            onClick: Message.ClickedEditSettings({ extension: extension.id }),
+                          },
+                          h,
+                        ),
+                      ]
+                    : []),
                 ],
               ),
             ]),
+    ],
+  )
+
+const membersView = (model: Model, h: HtmlBuilder<Message>): Html =>
+  h.section(
+    [h.Id('workshop-members')],
+    [
+      h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['People']),
+      h.ul(
+        [h.Class('divide-y')],
+        model.members.map(member =>
+          h.li(
+            [h.Id(`member-${member.id}`), h.Class('flex items-center gap-2 py-1.5 text-[12px]'), h.DataAttribute('role', member.role)],
+            [
+              h.span([h.Class('min-w-0 flex-1 truncate')], [member.name]),
+              badge(h, isAdmin(member) ? 'Administrator' : 'Member', isAdmin(member) ? STATE_CLASS.review : STATE_CLASS.queued),
+              ...(admin(model) && member.id !== model.shell.me.id
+                ? [
+                    button(
+                      {
+                        id: `role-${member.id}`,
+                        children: [isAdmin(member) ? 'Make member' : 'Make administrator'],
+                        variant: 'ghost',
+                        size: 'sm',
+                        class: 'h-6 text-[11px]',
+                        onClick: Message.ClickedSetRole({ memberId: member.id, role: isAdmin(member) ? 'member' : 'admin' }),
+                      },
+                      h,
+                    ),
+                  ]
+                : []),
+            ],
+          ),
+        ),
+      ),
     ],
   )
 
@@ -541,33 +815,47 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
           h.section(
             [h.Class('flex min-w-0 flex-col gap-3')],
             [
-              region(h, { id: 'workshop-form', deps: [model.prompt, model.notice], render: () => promptForm(model, h) }),
+              region(h, {
+                id: 'workshop-form',
+                deps: [model.prompt, model.notice, admin(model), model.members],
+                render: () => (admin(model) ? promptForm(model, h) : membersNote(model, h)),
+              }),
               region(h, {
                 id: 'workshop-runs',
-                deps: [model.runs],
+                deps: [model.runs, model.diffs, model.shown, admin(model)],
                 render: () =>
                   h.div(
                     [h.Id('workshop-runs'), h.Class('flex flex-col gap-3')],
                     model.runs.length === 0
                       ? [h.p([h.Class('text-[13px] text-muted-foreground')], ['No changes yet.'])]
-                      : model.runs.map(run => runView(run, h)),
+                      : model.runs.map(run => runView(run, model, h)),
                   ),
               }),
             ],
           ),
-          region(h, {
-            id: 'workshop-extensions',
-            deps: [model.extensions, model.editing, model.settingsChanges],
-            render: () =>
-              h.section(
-                [h.Id('workshop-extensions')],
-                [
-                  h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['Loaded extensions']),
-                  h.ul([h.Class('divide-y')], model.extensions.map(extension => extensionRow(extension, model.editing, h))),
-                  settingsHistory(model.settingsChanges, model.extensions, h),
-                ],
-              ),
-          }),
+          h.div(
+            [h.Class('flex min-w-0 flex-col gap-6')],
+            [
+              region(h, {
+                id: 'workshop-extensions',
+                deps: [model.extensions, model.editing, model.settingsChanges, admin(model)],
+                render: () =>
+                  h.section(
+                    [h.Id('workshop-extensions')],
+                    [
+                      h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['Loaded extensions']),
+                      h.ul([h.Class('divide-y')], model.extensions.map(extension => extensionRow(extension, model.editing, admin(model), h))),
+                      settingsHistory(model.settingsChanges, model.extensions, admin(model), h),
+                    ],
+                  ),
+              }),
+              region(h, {
+                id: 'workshop-members',
+                deps: [model.members, model.shell.me],
+                render: () => membersView(model, h),
+              }),
+            ],
+          ),
         ],
       ),
     ],
@@ -585,11 +873,12 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace | 
       const runs = yield* Changes.use(changes => changes.current)
       const extensions = yield* Extensions.use(extensions => extensions.current)
       const settingsChanges = yield* Extensions.use(extensions => extensions.currentSettingsChanges)
-      return { shell, runs, extensions, settingsChanges }
+      const members = (yield* Workspace.use(workspace => workspace.current)).members
+      return { shell, runs, extensions, settingsChanges, members }
     }),
   init,
   update,
   view,
   subscriptions,
-  snapshotDeps: model => [model.prompt, model.editing, model.notice],
+  snapshotDeps: model => [model.prompt, model.editing, model.notice, model.shown],
 }

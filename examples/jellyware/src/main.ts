@@ -47,7 +47,8 @@ const workDirectory = join(appDirectory, '.jellyware')
  *  of each per server). */
 const Host = Layer.mergeAll(
   Hyper.pageHost,
-  Jellyware.Contributions.layer,
+  // Commands that name roles are checked against the member's role.
+  Jellyware.Contributions.make({ rolesOf: Extensions.rolesOf }),
   // Rebuilds the CSS for classes extensions add, and moves open pages to it.
   Styles.layer({ appDirectory, extensionsDirectory }),
 )
@@ -62,7 +63,8 @@ const Loaded = Jellyware.layer({
 )
 
 /** Changes by prompt: the agent works on a copy of extensions/; the import
- *  rules, the typecheck and the loader decide what goes live (/extensions). */
+ *  rules and the typecheck decide what may go live, an administrator reads
+ *  the diff and approves it, and the loader builds it (/extensions). */
 const Changes = Jellyware.changesLayer({
   extensionsDirectory,
   workDirectory,
@@ -72,6 +74,7 @@ const Changes = Jellyware.changesLayer({
       : Agent.piAgent({ appDirectory, repository: join(appDirectory, '..', '..'), agentDirectory: join(workDirectory, 'pi-agent') }),
   checks: [Jellyware.importCheck(importRules), Agent.typecheck(appDirectory, workDirectory)],
   protectedDirectories: [join(appDirectory, 'src')],
+  review: true,
 }).pipe(Layer.provideMerge(Loaded))
 
 const Routes = Layer.mergeAll(

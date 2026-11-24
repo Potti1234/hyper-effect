@@ -3,17 +3,29 @@ import { Effect, Layer, Stream } from 'effect'
 import { Story } from 'foldkit/test'
 
 import { openPage, serve } from '@hyper-effect/core/testing'
-import { Changes, Contributions, type ExtensionStatus, Extensions, type Run, type SettingsChange, UndoRefused } from '@hyper-effect/jellyware'
+import {
+  Changes,
+  Contributions,
+  type ExtensionStatus,
+  Extensions,
+  type FileDiff,
+  ReviewRefused,
+  type Run,
+  type SettingsChange,
+  UndoRefused,
+} from '@hyper-effect/jellyware'
 
 import { USER_COOKIE_NAME, cookieValue } from '@/app/auth'
 import { SEED_MEMBERS } from '@/app/seed'
 import * as Store from '@/app/store'
 import * as Workshop from '@/app/workshop/page'
 
-/* The workshop page: prompts start runs, undo only for installed runs, and
-   the page renders runs and extensions. */
+/* The workshop page: prompts start runs, administrators approve or reject
+   them after reading the diff, undo only for installed runs, members only
+   look; the page renders runs, diffs, extensions and people. */
 
 const ada = SEED_MEMBERS[0]!
+const grace = SEED_MEMBERS[1]!
 
 const run = (id: string, state: Run['state']): Run => ({
   id,
@@ -26,6 +38,7 @@ const run = (id: string, state: Run['state']): Run => ({
   changes: [{ id: 'standup', action: 'changed', before: 'a', after: 'b' }],
   summary: 'Added the page.',
   error: state === 'failed' ? 'standup/page.ts(3,1): error TS2322' : null,
+  reviewer: null,
 })
 
 const standup: ExtensionStatus = { id: 'standup', name: 'Stand-up', version: '1', state: 'active', running: 1, error: null, settings: [] }
@@ -54,8 +67,28 @@ const change = (id: string, state: SettingsChange['state']): SettingsChange => (
   error: null,
 })
 
-const model = (runs: ReadonlyArray<Run> = [], settingsChanges: ReadonlyArray<SettingsChange> = []): Workshop.Model =>
-  Workshop.init({ shell: { me: ada, counts: { my: 0, ENG: 0, DES: 0 }, nav: [] }, runs, extensions: [standup, related], settingsChanges }).model
+const model = (runs: ReadonlyArray<Run> = [], settingsChanges: ReadonlyArray<SettingsChange> = [], me = ada): Workshop.Model =>
+  Workshop.init({
+    shell: { me, counts: { my: 0, ENG: 0, DES: 0 }, nav: [] },
+    runs,
+    extensions: [standup, related],
+    settingsChanges,
+    members: SEED_MEMBERS,
+  }).model
+
+const fileDiff: FileDiff = {
+  extension: 'standup',
+  path: 'extension.ts',
+  action: 'changed',
+  added: 1,
+  removed: 1,
+  lines: [
+    { kind: 'gap', text: '4 unchanged lines' },
+    { kind: 'removed', text: "label: 'Stand-up'" },
+    { kind: 'added', text: "label: 'Daily'" },
+  ],
+  truncated: false,
+}
 
 const { Command } = Story
 
@@ -87,6 +120,61 @@ describe('workshop: update (Story)', () => {
       Command.expectExact(Workshop.UndoRun({ runId: 'one' })),
       Command.resolve(Workshop.UndoRun, Workshop.Message.FailedUndo({ message: 'standup changed since this run.' })),
       Story.model(next => assert.strictEqual(next.notice, 'standup changed since this run.')),
+    )
+  })
+})
+
+describe('workshop: roles and review (Story)', () => {
+  it('lets an administrator approve or reject only runs waiting for review', () => {
+    Story.story(
+      Workshop.update,
+      Story.given(model([run('waiting', 'review'), run('live', 'installed')])),
+      Story.message(Workshop.Message.ClickedApprove({ runId: 'live' })),
+      Story.message(Workshop.Message.ClickedReject({ runId: 'unknown' })),
+      Story.message(Workshop.Message.ClickedApprove({ runId: 'waiting' })),
+      Command.expectExact(Workshop.Approve({ runId: 'waiting', reviewer: ada.name })),
+      Command.resolve(Workshop.Approve, Workshop.Message.FailedReview({ message: 'standup changed since this run started.' })),
+      Story.model(next => assert.strictEqual(next.notice, 'standup changed since this run started.')),
+      Story.message(Workshop.Message.ClickedReject({ runId: 'waiting' })),
+      Command.expectExact(Workshop.Reject({ runId: 'waiting', reviewer: ada.name })),
+      Command.resolve(Workshop.Reject, Workshop.Message.SucceededReview()),
+    )
+  })
+
+  it('refuses every change a member’s browser posts', () => {
+    Story.story(
+      Workshop.update,
+      Story.given(model([run('waiting', 'review'), run('live', 'installed')], [change('two', 'applied')], grace)),
+      Story.message(Workshop.Message.ChangedPrompt({ text: 'Add a page' })),
+      Story.message(Workshop.Message.SubmittedPrompt()),
+      Story.message(Workshop.Message.ClickedApprove({ runId: 'waiting' })),
+      Story.message(Workshop.Message.ClickedReject({ runId: 'waiting' })),
+      Story.message(Workshop.Message.ClickedUndo({ runId: 'live' })),
+      Story.message(Workshop.Message.ClickedEditSettings({ extension: 'related' })),
+      Story.message(Workshop.Message.ClickedUndoSettings({ changeId: 'two' })),
+      Story.message(Workshop.Message.ClickedSetRole({ memberId: 'grace', role: 'admin' })),
+      Command.expectNone(),
+      Story.model(next => assert.isNull(next.editing)),
+      // Looking at a run's changes is for everyone.
+      Story.message(Workshop.Message.ClickedShowChanges({ runId: 'live' })),
+      Story.model(next => assert.deepStrictEqual(next.shown, ['live'])),
+    )
+  })
+
+  it('gives roles to others, and closes the settings form of a member who loses the role', () => {
+    Story.story(
+      Workshop.update,
+      Story.given(model()),
+      // Not to oneself, and only to members who exist.
+      Story.message(Workshop.Message.ClickedSetRole({ memberId: ada.id, role: 'member' })),
+      Story.message(Workshop.Message.ClickedSetRole({ memberId: 'nobody', role: 'admin' })),
+      Story.message(Workshop.Message.ClickedSetRole({ memberId: grace.id, role: 'admin' })),
+      Command.expectExact(Workshop.SetRole({ memberId: grace.id, role: 'admin', actorId: ada.id })),
+      Command.resolve(Workshop.SetRole, Workshop.Message.SucceededRole()),
+      Story.message(Workshop.Message.ClickedEditSettings({ extension: 'related' })),
+      Story.model(next => assert.isNotNull(next.editing)),
+      Story.message(Workshop.Message.GotShell({ shell: { me: { ...ada, role: 'member' }, counts: { my: 0, ENG: 0, DES: 0 }, nav: [] } })),
+      Story.model(next => assert.isNull(next.editing)),
     )
   })
 })
@@ -134,10 +222,13 @@ describe('workshop: the page over HTTP', () => {
     Layer.succeed(
       Changes,
       Changes.of({
-        changes: Stream.make([run('one', 'installed'), run('two', 'failed')]),
-        current: Effect.succeed([run('one', 'installed'), run('two', 'failed')]),
-        start: () => Effect.succeed('three'),
+        changes: Stream.make([run('one', 'installed'), run('two', 'failed'), run('three', 'review')]),
+        current: Effect.succeed([run('one', 'installed'), run('two', 'failed'), run('three', 'review')]),
+        start: () => Effect.succeed('four'),
         undo: () => Effect.fail(new UndoRefused({ message: 'no' })),
+        approve: () => Effect.void,
+        reject: () => Effect.void,
+        diff: runId => (runId === 'three' ? Effect.succeed([fileDiff]) : Effect.fail(new ReviewRefused({ message: 'no' }))),
       }),
     ),
     Layer.succeed(
@@ -154,13 +245,20 @@ describe('workshop: the page over HTTP', () => {
     ),
   )
 
-  it('renders runs, their undo, and the loaded extensions', async () => {
+  it('renders runs, their undo, review and the loaded extensions for an administrator', async () => {
     const server = serve(Workshop.program, { path: Workshop.PATH }, undefined, services)
     try {
       const page = await openPage(server.handler, Workshop.PATH, `${USER_COOKIE_NAME}=${cookieValue('Ada')}`)
       assert.strictEqual(page.response.status, 200)
+      assert.include(page.html, 'id="workshop-prompt"')
       assert.include(page.html, 'id="run-one"')
       assert.include(page.html, 'id="undo-one"')
+      assert.include(page.html, 'id="approve-three"')
+      assert.include(page.html, 'id="reject-three"')
+      assert.include(page.html, 'id="diff-three"')
+      assert.include(page.html, 'id="changes-one"')
+      assert.include(page.html, 'id="role-grace"')
+      assert.notInclude(page.html, 'id="role-ada"')
       assert.notInclude(page.html, 'id="undo-two"')
       assert.include(page.html, 'error TS2322')
       assert.include(page.html, 'id="extension-standup"')
@@ -173,4 +271,43 @@ describe('workshop: the page over HTTP', () => {
       await server.dispose()
     }
   })
+
+  it('shows a member the runs and their changes, but nothing to change', async () => {
+    const server = serve(Workshop.program, { path: Workshop.PATH }, undefined, services)
+    try {
+      const page = await openPage(server.handler, Workshop.PATH, `${USER_COOKIE_NAME}=${cookieValue('Grace')}`)
+      assert.strictEqual(page.response.status, 200)
+      assert.include(page.html, 'Only administrators change the app. Ask Ada Lovelace')
+      assert.notInclude(page.html, 'id="workshop-prompt"')
+      assert.include(page.html, 'id="run-three"')
+      assert.include(page.html, 'Waiting for an administrator')
+      for (const id of ['approve-three', 'reject-three', 'undo-one', 'settings-related', 'undo-settings-two', 'role-ada']) {
+        assert.notInclude(page.html, `id="${id}"`)
+      }
+      assert.include(page.html, 'id="changes-one"')
+    } finally {
+      await server.dispose()
+    }
+  })
+})
+
+describe('workspace roles', () => {
+  it.effect('only administrators give roles, and one administrator always stays', () =>
+    Effect.gen(function* () {
+      const workspace = yield* Store.Workspace
+      const reason = (effect: Effect.Effect<void, Store.InvalidChange>) =>
+        effect.pipe(
+          Effect.as('done'),
+          Effect.catchTag('InvalidChange', error => Effect.succeed(error.reason)),
+        )
+      const newcomer = yield* workspace.memberFor('Lukas')
+      assert.strictEqual(newcomer.role, 'member')
+      assert.strictEqual(yield* reason(workspace.setRole('lukas', 'admin', 'grace')), 'Only administrators give roles.')
+      assert.strictEqual(yield* reason(workspace.setRole('ada', 'member', 'ada')), 'The workspace needs at least one administrator.')
+      assert.strictEqual(yield* reason(workspace.setRole('lukas', 'admin', 'ada')), 'done')
+      assert.strictEqual(yield* reason(workspace.setRole('ada', 'member', 'lukas')), 'done')
+      const roles = (yield* workspace.current).members.map(member => `${member.id}:${member.role}`)
+      assert.includeMembers(roles, ['ada:member', 'lukas:admin'])
+    }).pipe(Effect.provide(Store.layer)),
+  )
 })

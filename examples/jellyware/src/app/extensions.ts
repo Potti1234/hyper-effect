@@ -8,7 +8,7 @@ import { Contributions, type ExtensionSettings, NavEntry, type Provided, type Sl
 import { cn } from '@/lib/utils'
 
 import { principal, requireUser } from './auth'
-import { Member, isClosed } from './domain'
+import { Member, type Role, isClosed } from './domain'
 import { Viewers, Workspace, type WorkspaceState } from './store'
 import { type NavCounts, sidebar } from './view/shell'
 
@@ -61,6 +61,17 @@ export const issueSidebar = <R>(
  *  the member who clicks. Register the command with `Contributions.command`;
  *  it gets `{ args, memberId }` and answers with a line for the member. */
 export const action = (label: string, command: string, args: S.Json): SlotAction => ({ label, command, args })
+
+/** For `Contributions.make`: a member's roles (`admin` or `member`), for
+ *  commands that name the roles that may run them. */
+export const rolesOf = (memberId: string): Effect.Effect<ReadonlyArray<Role>, never, Workspace> =>
+  Effect.map(Workspace.use(workspace => workspace.current), state => {
+    const member = state.members.find(each => each.id === memberId)
+    return member === undefined ? [] : [member.role]
+  })
+
+/** Whether a member may change the app (/extensions). */
+export const isAdmin = (member: Member): boolean => member.role === 'admin'
 
 /** The options every page of the app is served with, extension pages
  *  included: add `path`. */
