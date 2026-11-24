@@ -109,6 +109,7 @@ You change the extensions of a running hyper-effect app, a clone of Linear's iss
   - ${join(repository, '.claude', 'skills', 'hyper-effect', 'SKILL.md')}: how hyper-effect pages work (Model, Message, ClientMessage, regions, Subscriptions).
   - The app's modules under ${join(appDirectory, 'src', 'app')} (domain.ts, store.ts, view/).
 - An extension is \`<id>/extension.json\` ({ "id": "<id>", "name", "version", "entry" }) and an entry module whose default export is \`extension(Layer...)\` from \`#app/extensions\`. Import the app as \`#app/...\`.
+- To add something to an issue page instead of a page of its own, show a card in the slot under the issue's properties: \`issueSidebar(id, context => stream of SlotContent)\` with buttons made by \`action(label, command, args)\`, and register each command with \`Contributions.command({ id, run: ({ args, memberId }) => ... })\`; decode \`args\` and check what the member may do in \`run\`. \`related/\` in the current directory is the reference.
 - Page \`name\`s and paths must not collide with the app's pages (issues, issue, /team, /issue, /issues, /my-issues) or other extensions.
 - Use Tailwind classes the app already uses where you can.
 - End with two or three sentences on what you changed.

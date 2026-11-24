@@ -128,6 +128,28 @@ try {
 
   // A swapped page breaks its open stream on purpose, so Datastar reconnects:
   // Chrome logs that one as a failed resource.
+  // CARDS IN THE APP'S OWN PAGES (extensions/related, slot issue.sidebar)
+  const openIssue = async (page, identifier) => {
+    const stream = page.waitForRequest(request => request.url().includes('/_hyper/issue/'))
+    await page.goto(`${base}/issue/${identifier}`)
+    await stream
+    await page.waitForSelector('#extension-cards')
+  }
+  let target = null
+  for (let n = 1; n <= 30 && target === null; n++) {
+    await openIssue(ada.page, `ENG-${n}`)
+    if ((await ada.page.locator('#card-related-action-0').count()) > 0) target = `ENG-${n}`
+  }
+  check('an extension’s card shows on an issue page, with its action', target !== null, target ?? 'no issue offers Mark urgent')
+  if (target !== null) {
+    check('with links to related issues', (await ada.page.locator('#card-related a[href^="/issue/"]').count()) > 0)
+    await openIssue(grace.page, target)
+    await ada.page.click('#card-related-action-0')
+    check('its action runs the extension’s command', await until(ada.page, () => document.querySelector('#notice')?.textContent?.includes('urgent') === true))
+    check('which changes the issue for another person', await until(grace.page, () => document.querySelector('#property-priority')?.textContent?.includes('Urgent') === true))
+    check('and the card follows the data (no more Mark urgent)', await until(ada.page, () => document.querySelector('#card-related-action-0') === null))
+  }
+
   // CHANGES BY PROMPT
   if (process.env.JELLYWARE_AGENT === 'script') {
     await ada.page.goto(`${base}/extensions`)

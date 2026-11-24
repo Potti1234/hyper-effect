@@ -3,7 +3,7 @@ import { Story } from 'foldkit/test'
 
 import { openPage, openStream, postEvent, readUntil, serve, token } from '@hyper-effect/core/testing'
 import { Contributions } from '@hyper-effect/jellyware'
-import { Layer } from 'effect'
+import { Effect, Layer, Stream } from 'effect'
 
 import { USER_COOKIE_NAME, cookieValue } from '@/app/auth'
 import * as IssuePage from '@/app/issue/page'
@@ -22,6 +22,7 @@ const model = (): IssuePage.Model =>
   IssuePage.init({
     me: ada,
     extensionNav: [],
+    extensionCards: [],
     identifier: target.identifier,
     issue: target,
     members: SEED_MEMBERS,
@@ -162,6 +163,49 @@ describe('issue: the page over HTTP', () => {
       assert.strictEqual((await postEvent(server.handler, page, { m: token({ _tag: 'SubmittedComment' }), q: 2 })).status, 204)
       const stream = await readUntil(await openStream(server.handler, page), 'Deployed the fix to staging.')
       assert.include(stream, 'Deployed the fix to staging.')
+    } finally {
+      await server.dispose()
+    }
+  })
+})
+
+describe('issue: cards from extensions', () => {
+  const card = {
+    id: 'related',
+    content: {
+      title: 'Related',
+      items: [{ label: 'Crash on save', detail: 'ENG-2', href: '/issue/ENG-2' }],
+      actions: [{ label: 'Mark urgent', command: 'related.mark-urgent', args: { issueId: target.id } }],
+      note: null,
+    },
+  }
+
+  it('runs only an action the page shows, and shows its answer', () => {
+    Story.story(
+      IssuePage.update,
+      Story.given({ ...model(), extensionCards: [card] }),
+      Story.message(IssuePage.Message.ClickedCardAction({ cardId: 'related', index: 3 })),
+      Story.message(IssuePage.Message.ClickedCardAction({ cardId: 'forged', index: 0 })),
+      Story.message(IssuePage.Message.ClickedCardAction({ cardId: 'related', index: 0 })),
+      Command.expectExact(IssuePage.RunCardAction({ command: 'related.mark-urgent', args: { issueId: target.id }, memberId: 'ada' })),
+      Command.resolve(IssuePage.RunCardAction, IssuePage.Message.CompletedCardAction({ message: 'Marked ENG-13 urgent.' })),
+      Story.model(next => assert.strictEqual(next.notice, 'Marked ENG-13 urgent.')),
+      Command.resolve(IssuePage.ExpireNotice, IssuePage.Message.ExpiredNotice({ seq: 1 })),
+    )
+  })
+
+  it('renders the cards an extension adds to the slot', async () => {
+    const withCard = Layer.effectDiscard(
+      Effect.flatMap(Contributions, contributions =>
+        contributions.slot({ slot: 'issue.sidebar', id: 'related', content: () => Stream.succeed(card.content) }),
+      ),
+    ).pipe(Layer.provideMerge(Contributions.layer))
+    const server = serve(IssuePage.program, { path: '/issue/:identifier' }, undefined, Layer.merge(Store.layer, withCard))
+    try {
+      const page = await openPage(server.handler, '/issue/ENG-13', `${USER_COOKIE_NAME}=${cookieValue('Ada')}`)
+      assert.include(page.html, 'id="card-related"')
+      assert.include(page.html, 'href="/issue/ENG-2"')
+      assert.include(page.html, 'id="card-related-action-0"')
     } finally {
       await server.dispose()
     }

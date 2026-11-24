@@ -1,9 +1,9 @@
-import { Effect, type Layer, Schema as S, Stream } from 'effect'
+import { Effect, type Layer, Schema as S, type Scope, Stream } from 'effect'
 import { KeyValueStore } from 'effect/persistence'
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { type Options, type PageRequest, PageHost, region, secretFromEnvironment } from '@hyper-effect/core'
-import { Contributions, NavEntry, type Provided } from '@hyper-effect/jellyware'
+import { Contributions, NavEntry, type Provided, type SlotAction, type SlotContent } from '@hyper-effect/jellyware'
 
 import { cn } from '@/lib/utils'
 
@@ -16,10 +16,11 @@ import { type NavCounts, sidebar } from './view/shell'
 
    `requires` is the list every extension is mounted with: an extension's
    layer may use these services and no others, and `extension` checks that
-   at compile time. The rest of this module is the app shell for extension
-   pages: the signed-in member, the sidebar counts and entries, kept live,
-   and the frame around a page, so an extension page looks like the app's
-   own pages. */
+   at compile time. Then: the slots the app's pages offer (cards an
+   extension shows in them, with actions that run its commands), and the
+   app shell for extension pages: the signed-in member, the sidebar counts
+   and entries, kept live, and the frame around a page, so an extension page
+   looks like the app's own pages. */
 
 export const requires = [PageHost, Contributions, Workspace, Viewers, KeyValueStore.KeyValueStore] as const
 
@@ -28,6 +29,35 @@ export type Host = Provided<typeof requires>
 
 /** Declares an extension: its default export, checked against `Host`. */
 export const extension = <E>(layer: Layer.Layer<never, E, Host>): Layer.Layer<never, E, Host> => layer
+
+// SLOTS AND COMMANDS
+
+/** The slot under an issue's properties. Its context: the issue shown and
+ *  the member looking. */
+export const ISSUE_SIDEBAR = 'issue.sidebar'
+
+export type IssueContext = Readonly<{ issueId: string; identifier: string; memberId: string }>
+
+/** Shows a card under an issue's properties, for the life of the
+ *  extension. `content` should emit at once and again when it changes
+ *  (from `Workspace.changes`, say). */
+export const issueSidebar = <R>(
+  id: string,
+  content: (context: IssueContext) => Stream.Stream<SlotContent, never, R>,
+): Effect.Effect<void, never, Contributions | Scope.Scope | R> =>
+  Contributions.use(contributions =>
+    contributions.slot({
+      slot: ISSUE_SIDEBAR,
+      id,
+      content: context =>
+        content({ issueId: context['issueId'] ?? '', identifier: context['identifier'] ?? '', memberId: context['memberId'] ?? '' }),
+    }),
+  )
+
+/** A button for a card: runs the command `command` with `args` (JSON) for
+ *  the member who clicks. Register the command with `Contributions.command`;
+ *  it gets `{ args, memberId }` and answers with a line for the member. */
+export const action = (label: string, command: string, args: S.Json): SlotAction => ({ label, command, args })
 
 /** The options every page of the app is served with, extension pages
  *  included: add `path`. */

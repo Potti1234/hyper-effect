@@ -36,6 +36,7 @@ export default extension(
 - **Pages** are ordinary hyper-effect programs. `src/app/extensions.ts` has the app's shell for them: `loadShell` in flags, `shellChanges` as a Subscription, `frame` around the view.
 - **Changing a file** in the folder loads the extension again (300 ms after the last change): the new version is mounted next to the old one and replaces its page and entries; open pages reconnect and keep their state. A version that fails to import or to build is dropped, and the old one keeps running; the server log says why.
 - **Removing the folder** removes the extension's pages and entries from open pages.
+- **Cards in the app's pages:** `issueSidebar(id, context => stream)` shows a card under an issue's properties; its buttons run commands the extension registers with `Contributions.command`. The page renders the card from data and runs only actions it shows.
 
 ## Changing the app by prompt
 
@@ -62,6 +63,7 @@ Limits of this version: old module versions stay in memory until the server rest
 | `src/app/workshop/page.ts` | `/extensions`: prompts, runs with undo, loaded extensions |
 | `src/app/agent.ts` | The pi agent with the Codex login, the scripted agent, the typecheck |
 | `extensions/standup/` | The Stand-up extension: per member, the issues in progress and in review |
+| `extensions/related/` | A card on each issue page (slot `issue.sidebar`): open issues sharing a label, and "Mark urgent" |
 | `src/app/issues/page.ts` | List and board (mounted at `/team/:team`, `/my-issues`, `/issues`) |
 | `src/app/issue/page.ts` | The issue page `/issue/:identifier` |
 | `src/app/store.ts` | The workspace with a change feed, and who views which issue |

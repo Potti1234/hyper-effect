@@ -1,0 +1,7 @@
+{
+  "id": "related",
+  "name": "Related issues",
+  "version": "1",
+  "entry": "extension.ts",
+  "description": "A card on each issue: open issues that share a label, and an action to mark the issue urgent."
+}

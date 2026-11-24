@@ -5,7 +5,7 @@ import { defineMessageUnion } from 'foldkit/message'
 import * as Navigation from 'foldkit/navigation'
 
 import { PageNotFound, type Program, keyBindings, memoizeLast, region, sampleLatest } from '@hyper-effect/core'
-import { Contributions, NavEntry } from '@hyper-effect/jellyware'
+import { Contributions, NavEntry, SlotCard } from '@hyper-effect/jellyware'
 
 import * as Icon from '@/lib/icon'
 import { renderTextarea } from '@/lib/textarea'
@@ -41,6 +41,7 @@ import { avatar, labelChip, priorityIcon, statusIcon, teamBadge } from '../view/
 import * as Picker from '../view/picker'
 import { patchFor, propertyIcon, propertyItems, valuesOf } from '../view/properties'
 import { type NavCounts, sidebar } from '../view/shell'
+import { ISSUE_SIDEBAR } from '../extensions'
 
 /* One issue: editable title and description, properties changed through the
    picker, comments, the activity log, and who else is looking at it. All of
@@ -55,6 +56,8 @@ export const Model = S.Struct({
   me: Member,
   /** Sidebar entries added by extensions. */
   extensionNav: S.Array(NavEntry),
+  /** Cards extensions show under the properties (slot `issue.sidebar`). */
+  extensionCards: S.Array(SlotCard),
   identifier: S.String,
   /** Null once someone deleted it. */
   issue: S.NullOr(Issue),
@@ -98,6 +101,9 @@ export const Message = defineMessageUnion({
   GotMenuMessage: { message: DropdownMenu.Message },
   ClickedToggleTheme: {},
   GotExtensionNav: { entries: S.Array(NavEntry) },
+  GotExtensionCards: { cards: S.Array(SlotCard) },
+  ClickedCardAction: { cardId: S.String, index: S.Number },
+  CompletedCardAction: { message: S.String },
   ClickedDismissNotice: {},
   PressedShortcut: { shortcut: Shortcut, targetId: S.String },
   GotIssue: {
@@ -130,6 +136,7 @@ export const ClientMessage = S.Union([
   Message.GotMenuMessage,
   Message.ClickedToggleTheme,
   Message.ClickedDismissNotice,
+  Message.ClickedCardAction,
 ])
 export type ClientMessage = typeof ClientMessage.Type
 
@@ -179,6 +186,18 @@ export const SetTheme = Command.define('SetTheme', {
     Workspace.use(workspace => workspace.setTheme(memberId, isDark)).pipe(Effect.as(Message.CompletedChange())),
 })
 
+/** Runs an action of an extension's card; its answer, or why it failed,
+ *  becomes the notice. */
+export const RunCardAction = Command.define('RunCardAction', {
+  args: { command: S.String, args: S.Json, memberId: S.String },
+  messages: [Message.CompletedCardAction],
+  execute: ({ command, args, memberId }) =>
+    Contributions.use(contributions => contributions.run(command, { args, memberId })).pipe(
+      Effect.catch(message => Effect.succeed(message)),
+      Effect.map(message => Message.CompletedCardAction({ message })),
+    ),
+})
+
 export const ExpireNotice = Command.define('ExpireNotice', {
   args: { seq: S.Number },
   messages: [Message.ExpiredNotice],
@@ -211,6 +230,7 @@ export const ScrollIntoView = Command.define('ScrollIntoView', {
 export type Flags = Readonly<{
   me: Member
   extensionNav: ReadonlyArray<NavEntry>
+  extensionCards: ReadonlyArray<SlotCard>
   identifier: string
   issue: Issue
   members: ReadonlyArray<Member>
@@ -225,6 +245,7 @@ export const init = (flags: Flags): Update.Return<Model, Message> => ({
   model: {
     me: flags.me,
     extensionNav: flags.extensionNav,
+    extensionCards: flags.extensionCards,
     identifier: flags.identifier,
     issue: flags.issue,
     members: flags.members,
@@ -249,7 +270,7 @@ export const init = (flags: Flags): Update.Return<Model, Message> => ({
 
 // UPDATE
 
-type UpdateReturn = Update.Return<Model, Message, Workspace>
+type UpdateReturn = Update.Return<Model, Message, Workspace | Contributions>
 
 type MenuItem = 'delete' | 'back'
 const Menu = DropdownMenu.create<MenuItem>()
@@ -403,6 +424,15 @@ export const updateModel = (model: Model, message: Message): UpdateReturn =>
       },
       ClickedToggleTheme: () => ({ model, commands: [SetTheme({ memberId: model.me.id, isDark: !model.me.isDark })] }),
       GotExtensionNav: ({ entries }) => ({ model: { ...model, extensionNav: entries } }),
+      GotExtensionCards: ({ cards }) => ({ model: { ...model, extensionCards: cards } }),
+      // Posted by a browser: only an action this page shows runs.
+      ClickedCardAction: ({ cardId, index }) => {
+        const action = model.extensionCards.find(card => card.id === cardId)?.content.actions[index]
+        return action === undefined
+          ? { model }
+          : { model, commands: [RunCardAction({ command: action.command, args: action.args, memberId: model.me.id })] }
+      },
+      CompletedCardAction: ({ message }) => showNotice(model, message),
       ClickedDismissNotice: () => ({ model: { ...model, notice: null } }),
       PressedShortcut: ({ shortcut, targetId }) => onShortcut(model, shortcut, targetId),
       GotIssue: ({ issue, members, comments, activity, counts }) => ({
@@ -473,6 +503,25 @@ const gotExtensionNav = memoizeLast((entries: ReadonlyArray<NavEntry>) => Messag
 
 export const subscriptions = Subscription.make<Model, Message, Workspace | Viewers | Contributions>()(entry => ({
   // Sidebar entries added by extensions, as they come and go.
+  // Cards extensions show for this issue, as extensions and data change.
+  extensionCards: entry(
+    { issueId: S.NullOr(S.String), identifier: S.String, memberId: S.String },
+    {
+      modelToDependencies: model => ({ issueId: model.issue?.id ?? null, identifier: model.identifier, memberId: model.me.id }),
+      dependenciesToStream: ({ issueId, identifier, memberId }) =>
+        issueId === null
+          ? Stream.empty
+          : Stream.unwrap(
+              Contributions.use(contributions =>
+                Effect.succeed(
+                  contributions
+                    .slotCards(ISSUE_SIDEBAR, { issueId, identifier, memberId })
+                    .pipe(Stream.map(cards => Message.GotExtensionCards({ cards }))),
+                ),
+              ),
+            ),
+    },
+  ),
   extensionNav: entry(
     {},
     {
@@ -549,13 +598,68 @@ const propertyButton = (
 const memberOf = (members: ReadonlyArray<Member>, id: string | null): Member | undefined =>
   id === null ? undefined : members.find(member => member.id === id)
 
+/** Cards extensions show under the properties. Rendered here from plain
+ *  data: links only to paths of this app, actions only as this page's own
+ *  ClientMessage. */
+const extensionCardsView = (cards: ReadonlyArray<SlotCard>, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [h.Id('extension-cards'), h.Class('flex flex-col gap-3 px-4 pb-4')],
+    cards.map(card => {
+      const key = card.id.replace(/[^A-Za-z0-9_-]/g, '-')
+      const { title, items, note, actions } = card.content
+      return h.section(
+        [h.Id(`card-${key}`), h.Class('rounded-lg border bg-card p-3')],
+        [
+          h.h3([h.Class('mb-1.5 text-[12px] font-medium text-muted-foreground')], [title]),
+          ...(items.length === 0
+            ? []
+            : [
+                h.ul(
+                  [h.Class('flex flex-col gap-0.5')],
+                  items.map(item =>
+                    h.li(
+                      [h.Class('flex items-baseline gap-2 text-[12.5px]')],
+                      [
+                        item.href !== null && item.href.startsWith('/') && !item.href.startsWith('//')
+                          ? h.a([h.Href(item.href), h.Class('min-w-0 flex-1 truncate hover:underline')], [item.label])
+                          : h.span([h.Class('min-w-0 flex-1 truncate')], [item.label]),
+                        ...(item.detail === null ? [] : [h.span([h.Class('shrink-0 text-[11px] text-muted-foreground')], [item.detail])]),
+                      ],
+                    ),
+                  ),
+                ),
+              ]),
+          ...(note === null ? [] : [h.p([h.Class('text-[12px] text-muted-foreground')], [note])]),
+          ...(actions.length === 0
+            ? []
+            : [
+                h.div(
+                  [h.Class('mt-2 flex flex-wrap gap-1.5')],
+                  actions.map((action, index) =>
+                    h.button(
+                      [
+                        h.Type('button'),
+                        h.Id(`card-${key}-action-${index}`),
+                        h.Class('h-7 rounded-md border bg-background px-2.5 text-[12px] font-medium shadow-xs hover:bg-accent'),
+                        h.OnClick(Message.ClickedCardAction({ cardId: card.id, index })),
+                      ],
+                      [action.label],
+                    ),
+                  ),
+                ),
+              ]),
+        ],
+      )
+    }),
+  )
+
 const propertiesPanel = (issue: Issue, members: ReadonlyArray<Member>, h: HtmlBuilder<Message>): Html => {
   const assignee = memberOf(members, issue.assigneeId)
   const creator = memberOf(members, issue.creatorId)
   const row = (label: string, value: Html) =>
     h.div([h.Class('grid grid-cols-[84px_1fr] items-center gap-1')], [h.span([h.Class('text-[12px] text-muted-foreground')], [label]), value])
   return h.aside(
-    [h.Id('properties'), h.AriaLabel('Properties'), h.Class('flex w-[280px] shrink-0 flex-col gap-1 overflow-y-auto border-l bg-muted/20 px-4 py-4')],
+    [h.Id('properties'), h.AriaLabel('Properties'), h.Class('flex flex-col gap-1 px-4 py-4')],
     [
       h.div([h.Class('px-2 pb-2 text-[12px] font-medium text-muted-foreground')], ['Properties']),
       row('Status', propertyButton(h, 'status', `Status: ${statusLabel[issue.status]}`, [statusIcon(issue.status, h), statusLabel[issue.status]])),
@@ -901,7 +1005,13 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => {
                         ),
                       ],
                     ),
-                    region(h, { id: 'properties', deps: [issue, model.members], render: () => propertiesPanel(issue, model.members, h) }),
+                    h.div(
+                      [h.Id('issue-side'), h.Class('flex w-[280px] shrink-0 flex-col overflow-y-auto border-l bg-muted/20')],
+                      [
+                        region(h, { id: 'properties', deps: [issue, model.members], render: () => propertiesPanel(issue, model.members, h) }),
+                        region(h, { id: 'extension-cards', deps: [model.extensionCards], render: () => extensionCardsView(model.extensionCards, h) }),
+                      ],
+                    ),
                   ],
                 ),
           ],
@@ -967,7 +1077,15 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace | 
       const slice = sliceOf(state, identifier, me.id)
       if (slice.issue === null) return yield* new PageNotFound()
       const extensionNav = yield* Contributions.use(contributions => contributions.navEntries)
-      return { me, extensionNav, identifier, ...slice, issue: slice.issue }
+      // The cards as they are now, so the first render shows them; a card
+      // whose content takes longer arrives through the Subscription.
+      const extensionCards = yield* Contributions.use(contributions =>
+        Stream.runHead(contributions.slotCards(ISSUE_SIDEBAR, { issueId: slice.issue!.id, identifier, memberId: me.id })),
+      ).pipe(
+        Effect.timeoutOption('300 millis'),
+        Effect.map(found => (found._tag === 'Some' && found.value._tag === 'Some' ? found.value.value : [])),
+      )
+      return { me, extensionNav, extensionCards, identifier, ...slice, issue: slice.issue }
     }),
   init,
   update,
