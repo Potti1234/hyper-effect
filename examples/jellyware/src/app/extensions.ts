@@ -3,7 +3,7 @@ import { KeyValueStore } from 'effect/persistence'
 import type { Html, HtmlBuilder } from 'foldkit/html'
 
 import { type Options, type PageRequest, PageHost, region, secretFromEnvironment } from '@hyper-effect/core'
-import { Contributions, NavEntry, type Provided, type SlotAction, type SlotContent } from '@hyper-effect/jellyware'
+import { Contributions, type ExtensionSettings, NavEntry, type Provided, type SlotAction, type SlotContent } from '@hyper-effect/jellyware'
 
 import { cn } from '@/lib/utils'
 
@@ -27,8 +27,11 @@ export const requires = [PageHost, Contributions, Workspace, Viewers, KeyValueSt
 /** The services an extension may use. */
 export type Host = Provided<typeof requires>
 
-/** Declares an extension: its default export, checked against `Host`. */
-export const extension = <E>(layer: Layer.Layer<never, E, Host>): Layer.Layer<never, E, Host> => layer
+/** Declares an extension: its default export, checked against `Host`. Its
+ *  settings (declared in extension.json) come as `ExtensionSettings`. */
+export const extension = <E>(
+  layer: Layer.Layer<never, E, Host | ExtensionSettings>,
+): Layer.Layer<never, E, Host | ExtensionSettings> => layer
 
 // SLOTS AND COMMANDS
 

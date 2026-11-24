@@ -36,6 +36,7 @@ export default extension(
 - **Pages** are ordinary hyper-effect programs. `src/app/extensions.ts` has the app's shell for them: `loadShell` in flags, `shellChanges` as a Subscription, `frame` around the view.
 - **Changing a file** in the folder loads the extension again (300 ms after the last change): the new version is mounted next to the old one and replaces its page and entries; open pages reconnect and keep their state. A version that fails to import or to build is dropped, and the old one keeps running; the server log says why.
 - **Removing the folder** removes the extension's pages and entries from open pages.
+- **Settings:** declared under `settings` in `extension.json` and read while building as `ExtensionSettings` (`settings.number('max')`). On `/extensions` every signed-in member can change them ("Settings" next to the extension); the extension is loaded again with the new values. When it fails with them, they are put back and the running version stays; applied changes can be undone. `extensions/related` has three.
 - **Cards in the app's pages:** `issueSidebar(id, context => stream)` shows a card under an issue's properties; its buttons run commands the extension registers with `Contributions.command`. The page renders the card from data and runs only actions it shows.
 
 ## Changing the app by prompt

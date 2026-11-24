@@ -4,7 +4,7 @@ import type { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { defineMessageUnion } from 'foldkit/message'
 
 import { type Program, memoizeLast, region } from '@hyper-effect/core'
-import { Changes, type Contributions, ExtensionStatus, Extensions, Run } from '@hyper-effect/jellyware'
+import { Changes, type Contributions, ExtensionStatus, Extensions, Run, SettingsChange } from '@hyper-effect/jellyware'
 
 import { renderTextarea } from '@/lib/textarea'
 import { cn } from '@/lib/utils'
@@ -14,18 +14,25 @@ import { Shell, frame, loadShell, shellChanges } from '../extensions'
 import { type Workspace } from '../store'
 
 /* The workshop: change the app by prompting an agent, follow each run, undo
-   it, and see which extensions are loaded. Every signed-in member may start
-   and undo runs. */
+   it, see which extensions are loaded, and change their settings (with undo;
+   a change an extension fails with is put back). Every signed-in member may
+   start and undo runs and change settings. */
 
 export const PATH = '/extensions'
 
 // MODEL
 
+/** The settings form open for one extension: the text of each field. */
+const Editing = S.Struct({ extension: S.String, values: S.Record(S.String, S.String) })
+type Editing = typeof Editing.Type
+
 export const Model = S.Struct({
   shell: Shell,
   runs: S.Array(Run),
   extensions: S.Array(ExtensionStatus),
+  settingsChanges: S.Array(SettingsChange),
   prompt: S.String,
+  editing: S.NullOr(Editing),
   notice: S.NullOr(S.String),
 })
 export type Model = typeof Model.Type
@@ -39,13 +46,29 @@ export const Message = defineMessageUnion({
   GotShell: { shell: Shell },
   GotRuns: { runs: S.Array(Run) },
   GotExtensions: { extensions: S.Array(ExtensionStatus) },
+  GotSettingsChanges: { changes: S.Array(SettingsChange) },
+  ClickedEditSettings: { extension: S.String },
+  ClickedCancelSettings: {},
+  ChangedSetting: { key: S.String, value: S.String },
+  ClickedToggleSetting: { key: S.String },
+  SubmittedSettings: {},
+  ClickedUndoSettings: { changeId: S.String },
+  CompletedSettings: { message: S.String },
   SucceededStart: {},
   SucceededUndo: {},
   FailedUndo: { message: S.String },
 })
 export type Message = typeof Message.Type
 
-export const ClientMessage = S.Union([Message.SubmittedPrompt, Message.ClickedUndo])
+export const ClientMessage = S.Union([
+  Message.SubmittedPrompt,
+  Message.ClickedUndo,
+  Message.ClickedEditSettings,
+  Message.ClickedCancelSettings,
+  Message.ClickedToggleSetting,
+  Message.SubmittedSettings,
+  Message.ClickedUndoSettings,
+])
 export type ClientMessage = typeof ClientMessage.Type
 
 // COMMAND
@@ -67,17 +90,56 @@ export const UndoRun = Command.define('Workshop.UndoRun', {
     ),
 })
 
+export const Configure = Command.define('Workshop.Configure', {
+  args: { extension: S.String, values: S.Record(S.String, S.String), author: S.String },
+  messages: [Message.CompletedSettings],
+  execute: ({ extension, values, author }) =>
+    Extensions.use(extensions => extensions.configure(extension, values, author)).pipe(
+      Effect.map(change =>
+        change.state === 'applied'
+          ? 'Saved. The extension runs with the new settings.'
+          : `The extension did not run with these settings, so they were put back: ${change.error ?? ''}`,
+      ),
+      Effect.catch(message => Effect.succeed(message)),
+      Effect.map(message => Message.CompletedSettings({ message })),
+    ),
+})
+
+export const UndoSettings = Command.define('Workshop.UndoSettings', {
+  args: { changeId: S.String },
+  messages: [Message.CompletedSettings],
+  execute: ({ changeId }) =>
+    Extensions.use(extensions => extensions.undoSettings(changeId)).pipe(
+      Effect.as('Undone. The extension runs with the earlier settings.'),
+      Effect.catch(message => Effect.succeed(message)),
+      Effect.map(message => Message.CompletedSettings({ message })),
+    ),
+})
+
 // INIT
 
-type Flags = Readonly<{ shell: Shell; runs: ReadonlyArray<Run>; extensions: ReadonlyArray<ExtensionStatus> }>
+type Flags = Readonly<{
+  shell: Shell
+  runs: ReadonlyArray<Run>
+  extensions: ReadonlyArray<ExtensionStatus>
+  settingsChanges: ReadonlyArray<SettingsChange>
+}>
 
 export const init = (flags: Flags): Update.Return<Model, Message> => ({
-  model: { shell: flags.shell, runs: flags.runs, extensions: flags.extensions, prompt: '', notice: null },
+  model: {
+    shell: flags.shell,
+    runs: flags.runs,
+    extensions: flags.extensions,
+    settingsChanges: flags.settingsChanges,
+    prompt: '',
+    editing: null,
+    notice: null,
+  },
 })
 
 // UPDATE
 
-type UpdateReturn = Update.Return<Model, Message, Changes>
+type UpdateReturn = Update.Return<Model, Message, Changes | Extensions>
 
 export const update = (model: Model, message: Message): UpdateReturn =>
   M.value(message).pipe(
@@ -100,6 +162,45 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       GotShell: ({ shell }) => ({ model: { ...model, shell } }),
       GotRuns: ({ runs }) => ({ model: { ...model, runs } }),
       GotExtensions: ({ extensions }) => ({ model: { ...model, extensions } }),
+      GotSettingsChanges: ({ changes }) => ({ model: { ...model, settingsChanges: changes } }),
+      // Posted by a browser: only an extension with settings.
+      ClickedEditSettings: ({ extension }) => {
+        const found = model.extensions.find(other => other.id === extension)
+        if (found === undefined || found.settings.length === 0) return { model }
+        const values = Object.fromEntries(found.settings.map(field => [field.key, String(field.value)]))
+        return { model: { ...model, editing: { extension, values }, notice: null } }
+      },
+      ClickedCancelSettings: () => ({ model: { ...model, editing: null } }),
+      ChangedSetting: ({ key, value }) =>
+        model.editing === null || !(key in model.editing.values)
+          ? { model }
+          : { model: { ...model, editing: { ...model.editing, values: { ...model.editing.values, [key]: value } } } },
+      ClickedToggleSetting: ({ key }) =>
+        model.editing === null || !(key in model.editing.values)
+          ? { model }
+          : {
+              model: {
+                ...model,
+                editing: {
+                  ...model.editing,
+                  values: { ...model.editing.values, [key]: model.editing.values[key] === 'true' ? 'false' : 'true' },
+                },
+              },
+            },
+      // The values are checked against the extension's declaration by
+      // `configure`; what a browser sends here is only text.
+      SubmittedSettings: () =>
+        model.editing === null
+          ? { model }
+          : {
+              model: { ...model, editing: null, notice: 'Loading the extension with the new settings…' },
+              commands: [Configure({ extension: model.editing.extension, values: model.editing.values, author: model.shell.me.name })],
+            },
+      ClickedUndoSettings: ({ changeId }) =>
+        model.settingsChanges.some(change => change.id === changeId && change.state === 'applied')
+          ? { model: { ...model, notice: null }, commands: [UndoSettings({ changeId })] }
+          : { model },
+      CompletedSettings: ({ message }) => ({ model: { ...model, notice: message } }),
       SucceededStart: () => ({ model }),
       SucceededUndo: () => ({ model }),
       FailedUndo: ({ message }) => ({ model: { ...model, notice: message } }),
@@ -111,6 +212,7 @@ export const update = (model: Model, message: Message): UpdateReturn =>
 // One Message per change for every open page.
 const gotRuns = memoizeLast((runs: ReadonlyArray<Run>) => Message.GotRuns({ runs }))
 const gotExtensions = memoizeLast((extensions: ReadonlyArray<ExtensionStatus>) => Message.GotExtensions({ extensions }))
+const gotSettingsChanges = memoizeLast((changes: ReadonlyArray<SettingsChange>) => Message.GotSettingsChanges({ changes }))
 
 export const subscriptions = Subscription.make<Model, Message, Workspace | Contributions | Changes | Extensions>()(entry => ({
   shell: entry(
@@ -133,6 +235,14 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Contr
       modelToDependencies: () => ({}),
       dependenciesToStream: () =>
         Stream.unwrap(Extensions.use(extensions => Effect.succeed(extensions.changes.pipe(Stream.map(gotExtensions))))),
+    },
+  ),
+  settingsChanges: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(Extensions.use(extensions => Effect.succeed(extensions.settingsChanges.pipe(Stream.map(gotSettingsChanges))))),
     },
   ),
 }))
@@ -250,7 +360,126 @@ const runView = (run: Run, h: HtmlBuilder<Message>): Html =>
     ],
   )
 
-const extensionRow = (extension: ExtensionStatus, h: HtmlBuilder<Message>): Html =>
+const describeValues = (values: Readonly<Record<string, string | number | boolean>>) =>
+  Object.entries(values)
+    .map(([key, value]) => `${key} ${String(value)}`)
+    .join(', ')
+
+/** What a settings change changed, as "max 5 → 8". */
+const describeChange = (change: SettingsChange) =>
+  Object.keys(change.after)
+    .filter(key => change.before[key] !== change.after[key])
+    .map(key => `${key} ${String(change.before[key])} → ${String(change.after[key])}`)
+    .join(', ') || describeValues(change.after)
+
+const settingsForm = (extension: ExtensionStatus, editing: Editing, h: HtmlBuilder<Message>): Html =>
+  h.form(
+    [h.Id(`settings-form-${extension.id}`), h.OnSubmit(Message.SubmittedSettings()), h.Class('mt-2 flex flex-col gap-2 rounded-md border bg-background p-2.5')],
+    [
+      ...extension.settings.map(field => {
+        const id = `setting-${extension.id}-${field.key}`
+        const text = editing.values[field.key] ?? ''
+        const input =
+          field.spec.type === 'boolean'
+            ? h.input([
+                h.Id(id),
+                h.Type('checkbox'),
+                h.Checked(text === 'true'),
+                h.OnClick(Message.ClickedToggleSetting({ key: field.key })),
+              ])
+            : field.spec.type === 'select'
+              ? h.select(
+                  [h.Id(id), h.Class('h-7 rounded-md border bg-background px-2 text-[12px]'), h.OnChange(value => Message.ChangedSetting({ key: field.key, value }))],
+                  field.spec.options.map(option => h.option([h.Value(option), h.Selected(option === text)], [option])),
+                )
+              : h.input([
+                  h.Id(id),
+                  h.Type(field.spec.type === 'number' ? 'number' : 'text'),
+                  h.Value(text),
+                  ...(field.spec.type === 'number' && field.spec.min !== undefined ? [h.Min(String(field.spec.min))] : []),
+                  ...(field.spec.type === 'number' && field.spec.max !== undefined ? [h.Max(String(field.spec.max))] : []),
+                  h.Class('h-7 w-full rounded-md border bg-background px-2 text-[12px]'),
+                  h.OnInput(value => Message.ChangedSetting({ key: field.key, value })),
+                ])
+        return h.label(
+          [h.For(id), h.Class(field.spec.type === 'boolean' ? 'flex items-center gap-2 text-[12px]' : 'flex flex-col gap-1 text-[12px]')],
+          field.spec.type === 'boolean'
+            ? [input, field.spec.label]
+            : [
+                h.span([h.Class('font-medium')], [field.spec.label]),
+                input,
+                ...(field.spec.description === undefined ? [] : [h.span([h.Class('text-[11px] text-muted-foreground')], [field.spec.description])]),
+              ],
+        )
+      }),
+      h.div(
+        [h.Class('flex justify-end gap-1.5')],
+        [
+          button({ id: `settings-cancel-${extension.id}`, children: ['Cancel'], variant: 'ghost', size: 'sm', class: 'h-7 text-[12px]', onClick: Message.ClickedCancelSettings() }, h),
+          button({ id: `settings-save-${extension.id}`, children: ['Save'], type: 'submit', size: 'sm', class: 'h-7 text-[12px]' }, h),
+        ],
+      ),
+    ],
+  )
+
+const settingsHistory = (changes: ReadonlyArray<SettingsChange>, extensions: ReadonlyArray<ExtensionStatus>, h: HtmlBuilder<Message>): Html =>
+  h.section(
+    [h.Id('workshop-settings-history'), h.Class('mt-6')],
+    [
+      h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['Settings changes']),
+      changes.length === 0
+        ? h.p([h.Class('text-[12px] text-muted-foreground')], ['None yet.'])
+        : h.ul(
+            [h.Class('divide-y')],
+            changes.slice(0, 20).map(change =>
+              h.li(
+                [h.Id(`settings-change-${change.id}`), h.Class('py-2 text-[12px]'), h.DataAttribute('state', change.state)],
+                [
+                  h.div(
+                    [h.Class('flex items-center gap-2')],
+                    [
+                      h.span([h.Class('min-w-0 flex-1')], [
+                        `${extensions.find(extension => extension.id === change.extension)?.name ?? change.extension}: ${describeChange(change)}`,
+                      ]),
+                      badge(
+                        h,
+                        change.state === 'applied' ? 'Applied' : change.state === 'reverted' ? 'Put back' : 'Undone',
+                        change.state === 'applied' ? STATE_CLASS.installed : change.state === 'reverted' ? STATE_CLASS.failed : STATE_CLASS.undone,
+                      ),
+                    ],
+                  ),
+                  h.p([h.Class('mt-0.5 text-[11px] text-muted-foreground')], [`${change.author} · ${time(change.at)} UTC`]),
+                  ...(change.error === null
+                    ? []
+                    : [h.pre([h.Class('mt-1 max-h-24 overflow-auto text-[11px] whitespace-pre-wrap text-destructive')], [change.error])]),
+                  ...(change.state === 'applied'
+                    ? [
+                        h.div(
+                          [h.Class('mt-1 flex justify-end')],
+                          [
+                            button(
+                              {
+                                id: `undo-settings-${change.id}`,
+                                children: ['Undo'],
+                                variant: 'outline',
+                                size: 'sm',
+                                class: 'h-6 text-[11px]',
+                                onClick: Message.ClickedUndoSettings({ changeId: change.id }),
+                              },
+                              h,
+                            ),
+                          ],
+                        ),
+                      ]
+                    : []),
+                ],
+              ),
+            ),
+          ),
+    ],
+  )
+
+const extensionRow = (extension: ExtensionStatus, editing: Editing | null, h: HtmlBuilder<Message>): Html =>
   h.li(
     [h.Id(`extension-${extension.id}`), h.Class('py-2'), h.DataAttribute('state', extension.state)],
     [
@@ -270,6 +499,32 @@ const extensionRow = (extension: ExtensionStatus, h: HtmlBuilder<Message>): Html
       ...(extension.error === null
         ? []
         : [h.pre([h.Class('mt-1 max-h-32 overflow-auto text-[11px] whitespace-pre-wrap text-destructive')], [extension.error])]),
+      ...(extension.settings.length === 0
+        ? []
+        : editing !== null && editing.extension === extension.id
+          ? [settingsForm(extension, editing, h)]
+          : [
+              h.div(
+                [h.Class('mt-1 flex items-center gap-2')],
+                [
+                  h.span(
+                    [h.Class('min-w-0 flex-1 truncate text-[11px] text-muted-foreground')],
+                    [describeValues(Object.fromEntries(extension.settings.map(field => [field.key, field.value])))],
+                  ),
+                  button(
+                    {
+                      id: `settings-${extension.id}`,
+                      children: ['Settings'],
+                      variant: 'outline',
+                      size: 'sm',
+                      class: 'h-6 text-[11px]',
+                      onClick: Message.ClickedEditSettings({ extension: extension.id }),
+                    },
+                    h,
+                  ),
+                ],
+              ),
+            ]),
     ],
   )
 
@@ -302,13 +557,14 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
           ),
           region(h, {
             id: 'workshop-extensions',
-            deps: [model.extensions],
+            deps: [model.extensions, model.editing, model.settingsChanges],
             render: () =>
               h.section(
                 [h.Id('workshop-extensions')],
                 [
                   h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['Loaded extensions']),
-                  h.ul([h.Class('divide-y')], model.extensions.map(extension => extensionRow(extension, h))),
+                  h.ul([h.Class('divide-y')], model.extensions.map(extension => extensionRow(extension, model.editing, h))),
+                  settingsHistory(model.settingsChanges, model.extensions, h),
                 ],
               ),
           }),
@@ -328,11 +584,12 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace | 
       const shell = yield* loadShell(request)
       const runs = yield* Changes.use(changes => changes.current)
       const extensions = yield* Extensions.use(extensions => extensions.current)
-      return { shell, runs, extensions }
+      const settingsChanges = yield* Extensions.use(extensions => extensions.currentSettingsChanges)
+      return { shell, runs, extensions, settingsChanges }
     }),
   init,
   update,
   view,
   subscriptions,
-  snapshotDeps: model => [model.prompt, model.notice],
+  snapshotDeps: model => [model.prompt, model.editing, model.notice],
 }

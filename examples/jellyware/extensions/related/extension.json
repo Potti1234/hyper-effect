@@ -1,7 +1,19 @@
 {
   "id": "related",
   "name": "Related issues",
-  "version": "1",
+  "version": "2",
   "entry": "extension.ts",
-  "description": "A card on each issue: open issues that share a label, and an action to mark the issue urgent."
+  "description": "A card on each issue: open issues that share a label, and an action to mark the issue urgent.",
+  "settings": {
+    "title": { "type": "string", "label": "Card title", "default": "Related" },
+    "max": {
+      "type": "number",
+      "label": "Issues shown",
+      "description": "The card takes at most 10; more fails, and the change is put back.",
+      "default": 5,
+      "min": 1,
+      "max": 20
+    },
+    "urgentAction": { "type": "boolean", "label": "Offer \"Mark urgent\"", "default": true }
+  }
 }

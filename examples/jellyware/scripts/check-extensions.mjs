@@ -150,6 +150,42 @@ try {
     check('and the card follows the data (no more Mark urgent)', await until(ada.page, () => document.querySelector('#card-related-action-0') === null))
   }
 
+  // SETTINGS (extensions/related: title, max, urgentAction)
+  if (target !== null) {
+    await openIssue(grace.page, target)
+    const cardTitle = () => grace.page.evaluate(() => document.querySelector('#card-related h3')?.textContent ?? null)
+    const cardItems = () => grace.page.evaluate(() => document.querySelectorAll('#card-related li').length)
+    const itemsBefore = await cardItems()
+    await ada.page.goto(`${base}/extensions`)
+    await ada.page.waitForSelector('#settings-related')
+    await ada.page.waitForTimeout(300)
+    const save = async values => {
+      await ada.page.click('#settings-related')
+      await ada.page.waitForSelector('#settings-form-related')
+      for (const [key, value] of Object.entries(values)) await ada.page.fill(`#setting-related-${key}`, value)
+      await ada.page.click('#settings-save-related')
+      await ada.page.waitForFunction(() => /Saved|put back/.test(document.querySelector('#workshop-notice')?.textContent ?? ''), null, { timeout: TIMEOUT })
+      return ada.page.textContent('#workshop-notice')
+    }
+    const saved = await save({ title: 'Linked issues', max: '1' })
+    check('a settings change is saved', saved.includes('Saved'), saved)
+    check('and reaches another person’s open issue page', await until(grace.page, () => document.querySelector('#card-related h3')?.textContent === 'Linked issues'))
+    check('with the new number of issues', (await cardItems()) <= 1, `${itemsBefore} → ${await cardItems()}`)
+
+    const refused = await save({ max: '12' })
+    check('a value the extension fails with is put back', refused.includes('put back') && refused.includes('at most 10'), refused)
+    check('the extension keeps running with the earlier settings', (await cardTitle()) === 'Linked issues' && (await cardItems()) <= 1)
+    check(
+      'the history shows it as put back',
+      await ada.page.evaluate(() => document.querySelector('#workshop-settings-history li')?.dataset.state === 'reverted'),
+    )
+
+    const undoButton = ada.page.locator('#workshop-settings-history button[id^="undo-settings-"]').first()
+    await undoButton.click()
+    check('undo puts the earlier settings back', await until(ada.page, () => (document.querySelector('#workshop-notice')?.textContent ?? '').includes('Undone')))
+    check('on the other person’s page too', await until(grace.page, () => document.querySelector('#card-related h3')?.textContent === 'Related'))
+  }
+
   // CHANGES BY PROMPT
   if (process.env.JELLYWARE_AGENT === 'script') {
     await ada.page.goto(`${base}/extensions`)
