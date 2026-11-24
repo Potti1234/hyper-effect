@@ -20,6 +20,17 @@ export {
   layer as changesLayer,
   type Options as ChangesOptions,
 } from './changes.ts'
-export { Contributions, NavEntry } from './contributions.ts'
+export {
+  type CommandEntry,
+  type CommandInput,
+  Contributions,
+  NavEntry,
+  SlotAction,
+  SlotCard,
+  SlotContent,
+  type SlotContext,
+  type SlotEntry,
+  SlotItem,
+} from './contributions.ts'
 export { graph, type Graph, type MountState, type Provided, type Requirement } from './graft.ts'
 export { ExtensionStatus, Extensions, Manifest, layer, type Options } from './loader.ts'
