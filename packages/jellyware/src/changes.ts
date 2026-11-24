@@ -299,6 +299,9 @@ export const layer = (options: Options): Layer.Layer<Changes, never, Extensions>
           }
           const runDirectory = directoryOf(run.id)
           yield* Effect.promise(() => rm(join(runDirectory, 'before'), { recursive: true, force: true }))
+          // Made even when every change adds an extension: it marks a run
+          // whose changes can be shown.
+          yield* Effect.promise(() => mkdir(join(runDirectory, 'before'), { recursive: true }))
           for (const id of ids) {
             yield* Effect.promise(() => copyFolder(join(live, id), join(runDirectory, 'before', id)))
           }

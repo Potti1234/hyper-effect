@@ -118,6 +118,17 @@ describe('changes with review', () => {
           // The diff stays readable afterwards.
           assert.strictEqual((await diff(renamed.id)).length, 2)
 
+          // A run that only adds an extension shows its files too.
+          const added = await change('Add a second entry', async task => {
+            writeExtension(task.stage, 'second', 'Second')
+            return 'Added.'
+          })
+          assert.deepStrictEqual((await diff(added.id)).map(file => [file.extension, file.path, file.action]), [
+            ['second', 'extension.json', 'added'],
+            ['second', 'extension.ts', 'added'],
+          ])
+          assert.strictEqual(await reject(added.id), 'done')
+
           // A rejected run changes nothing.
           const rejected = await change('Call it Hey', async task => {
             writeExtension(task.stage, 'hello', 'Hey')
