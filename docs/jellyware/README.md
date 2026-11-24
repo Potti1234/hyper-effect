@@ -1,6 +1,6 @@
 # Jellyware for hyper-effect
 
-Research and design notes for an extension system that lets users change a running hyper-effect app by prompting an agent. Status as of 2026-11-23: the page host is in core, the loader in `packages/jellyware`, and `examples/jellyware` runs an extension that is swapped while pages are open ([design.md](design.md#verified-in-the-example-2026-11-23)). Prompts on its `/extensions` page go through the change pipeline to pi and can be undone ([design.md](design.md#what-is-built-2026-11-23)).
+Research and design notes for an extension system that lets users change a running hyper-effect app by prompting an agent. Status as of 2026-11-23: the page host is in core, the loader in `packages/jellyware`, and `examples/jellyware` runs an extension that is swapped while pages are open ([design.md](design.md#verified-in-the-example-2026-11-23)). Prompts on its `/extensions` page go through the change pipeline to pi and can be undone ([design.md](design.md#what-is-built-2026-11-23)). Extensions add pages, sidebar entries, and cards with actions in the issue page ([design.md](design.md#4-slots-in-existing-pages)). Risks and what is left: [open-work.md](open-work.md).
 
 ## What jellyware means here
 
@@ -19,6 +19,7 @@ Scope of a first version:
 | [prior-art.md](prior-art.md) | How bb and Powermove load, isolate, validate and undo extensions |
 | [design.md](design.md) | The proposed architecture: eight parts, the changes to `@hyper-effect/core`, open questions |
 | [placement.md](placement.md) | Whether the extension system belongs in hyper-effect or in its own project |
+| [open-work.md](open-work.md) | The risks of what is built, the design for extension settings, and the work left for later |
 
 ## Findings
 

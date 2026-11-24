@@ -90,6 +90,13 @@ A Foldkit page has a fixed Model and Message union, so code from an extension ca
 
 Host code keeps the rules that make pages safe: `ClientMessage` lists, permission checks in update, region deps.
 
+Built (2026-11-24), with two changes to the sketch above:
+
+- **Content is a stream, not data.** A card usually depends on what the page shows (which issue). An extension registers `Contributions.slot({ slot, id, content })`, where `content` maps the page's context (`issueId`, `identifier`, `memberId`) to a stream of `SlotContent` (a title, items with optional links, actions, a note). The page subscribes to `Contributions.slotCards(slot, context)` and keeps the cards in its Model; the extension's code runs in that Subscription, never in update or view. A stream that fails becomes a card saying so.
+- **The browser posts a reference, not a command.** An action is `{ label, command, args }` in the card. The page's `ClickedCardAction { cardId, index }` names an action the page shows; update looks it up in the Model and runs `Contributions.run(command, { args, memberId })`. A browser cannot invent a command or its arguments. The command decodes `args` and checks the member's rights itself.
+
+The issue page offers the slot `issue.sidebar` under its properties (`ISSUE_SIDEBAR` and `issueSidebar` in `examples/jellyware/src/app/extensions.ts`). It renders links only to paths of the app. `extensions/related` shows open issues that share a label and an action "Mark urgent"; the browser check opens an issue, clicks it, and sees the priority change on another person's open copy of the issue.
+
 ## 5. Stylesheets
 
 Tailwind runs once when an app starts (`"css": "tailwindcss -i src/styles.css -o public/styles.css"` in `apps/starter/package.json`), and `Options.stylesheets` is a fixed list rendered into the page head. Classes used only in an extension have no CSS.
@@ -175,4 +182,4 @@ Everything else can live outside core ([placement.md](placement.md)).
 2. A hand-written extension in an example app: loader, Graft mount, registry, a page and a nav entry; swap it with a browser open (done: `packages/jellyware`, `examples/jellyware`).
 3. The staged pipeline and change sets (done: `Changes`, the pi agent, `/extensions`).
 4. Stylesheets (done: `StylesheetChanges`, the example's Tailwind rebuild), settings through `Graft.publish`, a page showing what is mounted (the workshop lists the loader's statuses, which follow Graft's mount states).
-5. Slots and commands.
+5. Slots and commands (done: `issue.sidebar`, `extensions/related`). Risks and the rest: [open-work.md](open-work.md).
