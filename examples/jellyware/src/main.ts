@@ -10,6 +10,7 @@ import * as Jellyware from '@hyper-effect/jellyware'
 
 import * as Agent from '@/app/agent'
 import * as Auth from '@/app/auth'
+import { importRules } from '@/app/extension-rules'
 import * as Extensions from '@/app/extensions'
 import * as IssuePage from '@/app/issue/page'
 import * as Issues from '@/app/issues/page'
@@ -60,8 +61,8 @@ const Loaded = Jellyware.layer({
   Layer.provide(Jellyware.graph),
 )
 
-/** Changes by prompt: the agent works on a copy of extensions/, the
- *  typecheck and the loader decide what goes live (/extensions). */
+/** Changes by prompt: the agent works on a copy of extensions/; the import
+ *  rules, the typecheck and the loader decide what goes live (/extensions). */
 const Changes = Jellyware.changesLayer({
   extensionsDirectory,
   workDirectory,
@@ -69,7 +70,7 @@ const Changes = Jellyware.changesLayer({
     process.env['JELLYWARE_AGENT'] === 'script'
       ? Agent.scriptAgent
       : Agent.piAgent({ appDirectory, repository: join(appDirectory, '..', '..'), agentDirectory: join(workDirectory, 'pi-agent') }),
-  checks: [Agent.typecheck(appDirectory, workDirectory)],
+  checks: [Jellyware.importCheck(importRules), Agent.typecheck(appDirectory, workDirectory)],
   protectedDirectories: [join(appDirectory, 'src')],
 }).pipe(Layer.provideMerge(Loaded))
 

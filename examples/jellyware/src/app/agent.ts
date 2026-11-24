@@ -1,12 +1,17 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { rmSync } from 'node:fs'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { Effect, Schema as S } from 'effect'
 
-import { type Agent, AgentError, type Check } from '@hyper-effect/jellyware'
+import { type Agent, AgentError, type Check, type Task } from '@hyper-effect/jellyware'
+
+import type { Guard } from '../pi-guard.ts'
+import { importRules } from './extension-rules.ts'
 
 /* The agent that changes this app's extensions, and the typecheck its work
    must pass.
@@ -14,15 +19,20 @@ import { type Agent, AgentError, type Check } from '@hyper-effect/jellyware'
    The agent is pi (https://github.com/badlogic/pi-mono), run once per
    attempt in print mode, in the run's stage folder, with file tools only
    (read, edit, write, grep, find, ls; no shell). A retry continues the same
-   pi session with what failed.
+   pi session with what failed. The pi extension in src/pi-guard.ts limits
+   those tools: writes only in the stage, reads in the stage and the
+   repository but not in `.jellyware`, `.git`, session snapshots or `.env`
+   files.
 
    Credentials: pi and the Codex CLI sign in to the same ChatGPT account, and
    refreshing an OAuth token rotates it, so whichever refreshes invalidates
    the other's copy. pi therefore never refreshes here. Before each attempt
    the current access token from the Codex CLI's `auth.json` (which the
    Codex CLI keeps fresh) is written to this app's own pi folder
-   (`.jellyware/pi-agent`), without a refresh token. An attempt starts only
-   while the token has an hour left; running `codex` refreshes it.
+   (`.jellyware/pi-agent`), without a refresh token, and deleted when pi
+   stops; one left by a server that stopped during an attempt is deleted
+   when the agent is made. An attempt starts only while the token has an
+   hour left; running `codex` refreshes it.
 
    Environment: JELLYWARE_MODEL (default gpt-6.1-sol), JELLYWARE_THINKING
    (default medium), JELLYWARE_PI_CLI (pi's cli.js; default: found through
@@ -36,6 +46,8 @@ const JwtPayload = S.Struct({ exp: S.Number })
 const decodeJwtPayload = S.decodeUnknownEffect(S.fromJsonString(JwtPayload))
 
 const fail = (message: string) => new AgentError({ message })
+
+const credentialsFile = (agentDirectory: string) => join(agentDirectory, 'auth.json')
 
 /** Writes pi's credentials from the Codex CLI's login. */
 const writeCredentials = (agentDirectory: string) =>
@@ -59,7 +71,7 @@ const writeCredentials = (agentDirectory: string) =>
     }
     yield* Effect.promise(async () => {
       await mkdir(agentDirectory, { recursive: true })
-      await writeFile(join(agentDirectory, 'auth.json'), JSON.stringify(credentials), { mode: 0o600 })
+      await writeFile(credentialsFile(agentDirectory), JSON.stringify(credentials), { mode: 0o600 })
     })
   })
 
@@ -95,12 +107,23 @@ const runNode = (args: ReadonlyArray<string>, options: Readonly<{ cwd: string; e
     return Effect.sync(() => child.kill())
   })
 
+/** The import rules as a sentence for the agent. */
+const allowedImports = () =>
+  [
+    ...importRules.allow.map(rule =>
+      typeof rule === 'string'
+        ? `\`${rule.replace(/^=/, '').replace(/\*$/, '...')}\``
+        : `from \`${rule.module}\` only ${rule.names.join(', ')}`,
+    ),
+    'and files in the extension\'s own folder',
+  ].join('; ')
+
 const instructions = (appDirectory: string, repository: string) => `
 # Changing this app's extensions
 
 You change the extensions of a running hyper-effect app, a clone of Linear's issue tracker. The current directory is a copy of the app's \`extensions/\` folder: each subfolder is one extension. When you finish, the app checks your work and loads it while people use the app.
 
-- Create, edit or delete files only in the current directory. Do not change anything else.
+- Create and edit files only in the current directory; writes anywhere else are refused. You may read the repository, except \`.jellyware\`, \`.git\`, session snapshots and \`.env\` files.
 - You have no shell. The app typechecks your extensions after you finish and sends you the errors.
 - Read before you write:
   - ${join(appDirectory, 'AGENTS.md')}: the rules for this app and its extensions.
@@ -111,6 +134,7 @@ You change the extensions of a running hyper-effect app, a clone of Linear's iss
 - An extension is \`<id>/extension.json\` ({ "id": "<id>", "name", "version", "entry" }) and an entry module whose default export is \`extension(Layer...)\` from \`#app/extensions\`. Import the app as \`#app/...\`.
 - To add something to an issue page instead of a page of its own, show a card in the slot under the issue's properties: \`issueSidebar(id, context => stream of SlotContent)\` with buttons made by \`action(label, command, args)\`, and register each command with \`Contributions.command({ id, run: ({ args, memberId }) => ... })\`; decode \`args\` and check what the member may do in \`run\`. \`related/\` in the current directory is the reference.
 - Values people should be able to change without a prompt go into \`settings\` in extension.json (per key: "type" string, number (with "min"/"max"), boolean or select (with "options"), a "label" and a "default"); read them while building with \`const settings = yield* ExtensionSettings\` from \`@hyper-effect/jellyware\` (\`settings.number('max')\`, \`settings.string\`, \`settings.boolean\`). \`related/\` declares three.
+- Extensions run inside the app's server, so a check refuses code that reaches beyond the app's services. Import only: ${allowedImports()}. Type-only imports (\`import type\`) of anything are fine. Do not use \`process\`, \`globalThis\`, \`require\`, \`eval\`, \`Function\`, \`fetch\`, \`WebSocket\`, \`import.meta\`, a computed \`import()\`, or Effect's \`Config\`/\`ConfigProvider\`.
 - Page \`name\`s and paths must not collide with the app's pages (issues, issue, /team, /issue, /issues, /my-issues) or other extensions.
 - Use Tailwind classes the app already uses where you can.
 - End with two or three sentences on what you changed.
@@ -125,45 +149,61 @@ export type PiOptions = Readonly<{
   agentDirectory: string
 }>
 
-export const piAgent = (options: PiOptions): Agent => ({
-  work: ({ prompt, stage, runDirectory, feedback }) =>
-    Effect.gen(function* () {
-      yield* writeCredentials(options.agentDirectory)
-      const instructionsFile = join(runDirectory, 'instructions.md')
-      yield* Effect.promise(() => writeFile(instructionsFile, instructions(options.appDirectory, options.repository)))
-      const message =
-        feedback === null
-          ? prompt
-          : `Your change did not go live. Fix it; here is what failed:\n\n${feedback}`
-      const cli = yield* Effect.try({ try: piCli, catch: error => fail(`pi was not found: ${String(error)}`) })
-      return yield* runNode(
-        [
-          cli,
-          '--print',
-          '--no-approve',
-          '--session-dir', join(runDirectory, 'pi'),
-          '--session-id', 'run',
-          '--provider', 'openai-codex',
-          '--model', process.env['JELLYWARE_MODEL'] ?? 'gpt-6.1-sol',
-          '--thinking', process.env['JELLYWARE_THINKING'] ?? 'medium',
-          '--tools', 'read,edit,write,grep,find,ls',
-          '--no-skills',
-          '--no-extensions',
-          '--no-prompt-templates',
-          '--append-system-prompt', instructionsFile,
-          message,
-        ],
-        {
-          cwd: stage,
-          env: { ...process.env, PI_CODING_AGENT_DIR: options.agentDirectory },
-          timeoutMs: 20 * 60 * 1000,
-        },
-      ).pipe(
-        Effect.map(output => output.trim()),
-        Effect.mapError(output => fail(`pi stopped: ${output}`)),
-      )
-    }),
-})
+const guardModule = fileURLToPath(new URL('../pi-guard.ts', import.meta.url))
+
+/** Folders and files pi never reads under the repository. */
+const HIDDEN = ['.jellyware', '.git', '.hyper-sessions*', '.env*']
+
+export const piAgent = (options: PiOptions): Agent => {
+  // Credentials left by a server that stopped while pi worked.
+  rmSync(credentialsFile(options.agentDirectory), { force: true })
+  return { work: task => work(options, task) }
+}
+
+const work = (options: PiOptions, { prompt, stage, runDirectory, feedback }: Task) =>
+  Effect.gen(function* () {
+    const instructionsFile = join(runDirectory, 'instructions.md')
+    yield* Effect.promise(() => writeFile(instructionsFile, instructions(options.appDirectory, options.repository)))
+    const message =
+      feedback === null
+        ? prompt
+        : `Your change did not go live. Fix it; here is what failed:\n\n${feedback}`
+    const cli = yield* Effect.try({ try: piCli, catch: error => fail(`pi was not found: ${String(error)}`) })
+    const guard: Guard = { stage, read: [options.repository], hidden: HIDDEN }
+    const pi = runNode(
+      [
+        cli,
+        '--print',
+        '--no-approve',
+        '--session-dir', join(runDirectory, 'pi'),
+        '--session-id', 'run',
+        '--provider', 'openai-codex',
+        '--model', process.env['JELLYWARE_MODEL'] ?? 'gpt-6.1-sol',
+        '--thinking', process.env['JELLYWARE_THINKING'] ?? 'medium',
+        '--tools', 'read,edit,write,grep,find,ls',
+        '--no-skills',
+        '--no-extensions',
+        '--extension', guardModule,
+        '--no-prompt-templates',
+        '--append-system-prompt', instructionsFile,
+        message,
+      ],
+      {
+        cwd: stage,
+        env: { ...process.env, PI_CODING_AGENT_DIR: options.agentDirectory, JELLYWARE_GUARD: JSON.stringify(guard) },
+        timeoutMs: 20 * 60 * 1000,
+      },
+    ).pipe(
+      Effect.map(output => output.trim()),
+      Effect.mapError(output => fail(`pi stopped: ${output}`)),
+    )
+    // The token exists only while pi runs.
+    return yield* Effect.acquireUseRelease(
+      writeCredentials(options.agentDirectory),
+      () => pi,
+      () => Effect.promise(() => rm(credentialsFile(options.agentDirectory), { force: true })),
+    )
+  })
 
 /** Typechecks the changed extensions of a snapshot against the app,
  *  incrementally (the first run takes a minute or two). */

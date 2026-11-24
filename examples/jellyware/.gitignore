@@ -5,3 +5,4 @@ public/assets
 
 # Change runs, pi credentials, typecheck cache
 .jellyware/
+test/.tmp/
