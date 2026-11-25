@@ -213,6 +213,19 @@ Extensions kept their data in the app's stores (an issue's priority, a member's 
 
 - **What is left:** one database per extension, on one server ([one server, one folder](#one-server-one-folder)); several servers want the app's Postgres with a schema per extension. No backup or export of an extension's data, and removing an extension leaves its database. The authorizer and `ATTACH` refusal need Node 24 or later.
 
+## Managing extensions: sections, chat, on and off (built 2026-11-25)
+
+/extensions grew into one long page. It now has a second sidebar with five sections, each at a path of its own, moved between within the session (`onUrlChange`):
+
+- **Extensions** (`/extensions`): each extension with what it adds, its data, its settings and the member's own settings, and the history of settings changes. Administrators turn an extension off and on (`Extensions.setEnabled`): off unloads it and keeps it unloaded across restarts and changes of its files, until it is turned on; its folder, settings and data stay. The loader lists it as `disabled`, and the agent's guide says it is turned off.
+- **Chat** (`/extensions/chat/<run>`): conversations with the agent. A run's activity (`Changes.activity(runId)`, kept in the run's `activity.json`) is what the agent said, every tool it called with its file and outcome, and each step of the pipeline: an attempt, each check with its time and its error, a failure sent back, the review, the install, an undo. pi runs in JSON mode (`--mode json`) for it; the agent reports events through `Task.report`. A message in a conversation starts a run that follows up the conversation's newest run (`Run.thread`, `Changes.start(prompt, author, thread)`): pi forks that run's session and is told what became of it (live, rejected, failed), since the stage is a new copy of what is live now. A follow-up waits until the agent is done with the conversation. Runs in review are approved or rejected in the chat.
+- **Changes** (`/extensions/changes`): every run with its diff, review and undo, and a link to its conversation.
+- **Customize** and **People**: what was on the page before. An example opens a new conversation with it.
+
+Tests: the activity of a run that fails a check once, approval steps, follow-ups and refusals, and turning off and on (package); each section over HTTP, the activity streamed into a conversation, and the update's checks (example); the sections, an extension turned off and on while another person's page shows it, the chat's tool calls, checks and a follow-up, and three attempts of a failing change (browser check, 90/90). A real pi conversation (a "days open" card, then "also show the date it was created") showed each read and write as it happened; the follow-up forked the first session and took 75 seconds.
+
+- **What is left:** a follow-up of a run still in review starts from what is live, so the agent writes that run's change again; continuing the stage of a run in review would be closer to what people expect. Members cannot write in the chat. Tool calls show the file, not the edit; the diff at the end shows what changed.
+
 ## The list
 
 Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 12 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
