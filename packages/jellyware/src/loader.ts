@@ -13,6 +13,7 @@ import {
   Exit,
   Layer,
   Queue,
+  type Redacted,
   Schema as S,
   Scope,
   Semaphore,
@@ -26,14 +27,19 @@ import { PageOwner } from '@hyper-effect/core'
 
 import { CurrentExtension } from './contributions.ts'
 import * as Graft from './graft.ts'
+import { decrypt, encrypt, isStoredSecret, maskSecret } from './secrets.ts'
 import {
   ExtensionSettings,
   SettingField,
   SettingSpec,
   type SettingValue,
+  type SettingValues,
   effectiveValues,
+  fits,
+  isMemberSetting,
   makeSettings,
   parseInput,
+  valuesOf,
 } from './settings.ts'
 
 /* Loads the extensions in a folder, swaps each one when its files change,
@@ -59,6 +65,11 @@ import {
    extension again with them. When the new version does not run, the old
    one keeps running and the old values are stored again; the change is
    recorded as reverted. Applied changes can be undone, newest first.
+   Secrets are stored encrypted with `secretKey` and leave the loader only
+   as `Redacted` values for the extension: statuses and the history show
+   them as set or not set. A member's own values of member settings are
+   kept apart (`configureMember`) and reach the running extension through
+   `ExtensionSettings.forMember`, without a new build.
 
    Old generations stay in Node's module cache until the process restarts. */
 
@@ -130,6 +141,17 @@ export class Extensions extends Context.Service<
     /** Settings changes, newest first, now and after every change. */
     readonly settingsChanges: Stream.Stream<ReadonlyArray<SettingsChange>>
     readonly currentSettingsChanges: Effect.Effect<ReadonlyArray<SettingsChange>>
+    /** Clears secrets of an extension (keys of secret settings) and loads it
+     *  again, as `configure` does. */
+    readonly clearSecrets: (id: string, keys: ReadonlyArray<string>, author: string) => Effect.Effect<SettingsChange, string>
+    /** The member settings of every extension as `memberId` has them, now
+     *  and after every change. */
+    readonly memberSettings: (memberId: string) => Stream.Stream<ReadonlyArray<MemberSettings>>
+    /** Sets a member's own values (the form's text per key) of member
+     *  settings; fails with a line for the member when one does not fit. */
+    readonly configureMember: (id: string, memberId: string, input: Readonly<Record<string, string>>) => Effect.Effect<void, string>
+    /** Puts a member back on the defaults of an extension's settings. */
+    readonly resetMember: (id: string, memberId: string) => Effect.Effect<void>
   }
 >()('@hyper-effect/jellyware/Extensions') {}
 
@@ -175,7 +197,20 @@ export type Options<Requires extends ReadonlyArray<Graft.Requirement>> = Readonl
   requires: Requires
   /** Reload an extension when a file in its folder changes. */
   watch?: boolean
+  /** Encrypts secret settings at rest. Without it, secrets cannot be set. */
+  secretKey?: Redacted.Redacted<string>
 }>
+
+/** The member settings of one extension as one member has them: `fields`
+ *  hold the member's values (their own or the default), `own` the keys
+ *  they set themselves. */
+export const MemberSettings = S.Struct({
+  extension: S.String,
+  name: S.String,
+  fields: S.Array(SettingField),
+  own: S.Array(S.String),
+})
+export type MemberSettings = typeof MemberSettings.Type
 
 /** Loads every extension in `options.directory` and keeps them loaded for
  *  the life of the layer. */
@@ -215,8 +250,61 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
         )
       const writeValues = (id: string, values: Readonly<Record<string, SettingValue>>) =>
         stored.set(id, JSON.stringify(values)).pipe(Effect.orDie)
+      /** The fields a page may show: secrets as set or not set. */
       const fieldsOf = (specs: Readonly<Record<string, SettingSpec>>, values: Readonly<Record<string, SettingValue>>) =>
-        Object.entries(specs).map(([key, spec]): SettingField => ({ key, spec, value: values[key] ?? spec.default }))
+        Object.entries(specs).map(
+          ([key, spec]): SettingField =>
+            spec.type === 'secret'
+              ? { key, spec, value: '', isSet: (values[key] ?? '') !== '' }
+              : { key, spec, value: values[key] ?? ('default' in spec ? spec.default : ''), isSet: true },
+        )
+
+      // Members' own values: extension id -> member id -> values.
+      type MemberValues = Readonly<Record<string, Readonly<Record<string, unknown>>>>
+      const memberStored = KeyValueStore.prefix(store, 'jellyware/member-settings/')
+      const memberValues = yield* SubscriptionRef.make<Readonly<Record<string, MemberValues>>>({})
+      const decodeMemberValues = S.decodeUnknownEffect(S.fromJsonString(S.Record(S.String, S.Record(S.String, S.Unknown))))
+      /** Reads an extension's member values from the store once. */
+      const ensureMemberValues = (id: string) =>
+        Effect.gen(function* () {
+          if (id in (yield* SubscriptionRef.get(memberValues))) return
+          const read = yield* memberStored.get(id).pipe(
+            Effect.flatMap(text => (text === undefined ? Effect.succeed({}) : decodeMemberValues(text))),
+            Effect.orElseSucceed((): MemberValues => ({})),
+          )
+          yield* SubscriptionRef.update(memberValues, all => (id in all ? all : { ...all, [id]: read }))
+        })
+      const writeMemberValues = (id: string, values: MemberValues) =>
+        Effect.gen(function* () {
+          yield* SubscriptionRef.update(memberValues, all => ({ ...all, [id]: values }))
+          yield* memberStored.set(id, JSON.stringify(values)).pipe(Effect.orDie)
+        })
+      /** A member's own values that are member settings and fit. */
+      const ownValues = (specs: Readonly<Record<string, SettingSpec>>, own: Readonly<Record<string, unknown>>) => {
+        const values: Record<string, SettingValue> = {}
+        for (const [key, value] of Object.entries(own)) {
+          const spec = specs[key]
+          if (spec === undefined || !isMemberSetting(spec) || fits(spec, value) !== null) continue
+          if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') values[key] = value
+        }
+        return values
+      }
+
+      /** The secrets of `values`, opened; a secret the key cannot open is
+       *  given as not set. */
+      const openSecrets = (id: string, specs: Readonly<Record<string, SettingSpec>>, values: Readonly<Record<string, SettingValue>>) =>
+        Effect.gen(function* () {
+          const secrets: Record<string, string> = {}
+          for (const [key, spec] of Object.entries(specs)) {
+            if (spec.type !== 'secret') continue
+            const stored = values[key]
+            if (typeof stored !== 'string' || stored === '') continue
+            const plain = options.secretKey === undefined ? null : decrypt(options.secretKey, stored)
+            if (plain === null) yield* Effect.logWarning(`jellyware: ${id}: the secret ${key} cannot be read with this key; it is given as not set`)
+            else secrets[key] = plain
+          }
+          return secrets
+        })
 
       const setStatus = (status: ExtensionStatus) =>
         SubscriptionRef.update(statuses, list =>
@@ -252,6 +340,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           )
           const specs = manifest.settings ?? {}
           const values = effectiveValues(specs, yield* readValues(id))
+          yield* ensureMemberValues(id)
           const base = {
             id,
             name: manifest.name,
@@ -288,11 +377,20 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           }
 
           const scope = yield* Scope.fork(lifetime)
-          // Its settings, and its id as the owner of what it registers.
+          // Its settings (secrets opened; member values read while it runs),
+          // and its id as the owner of what it registers.
+          const plain = Object.fromEntries(Object.entries(values).filter(([key]) => specs[key]?.type !== 'secret'))
+          const secrets = yield* openSecrets(id, specs, values)
+          const forMember = (memberId: string): Stream.Stream<SettingValues> =>
+            SubscriptionRef.changes(memberValues).pipe(
+              Stream.map(all => ownValues(specs, all[id]?.[memberId] ?? {})),
+              Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+              Stream.map(own => valuesOf({ ...plain, ...own })),
+            )
           const configured = extension.pipe(
             Layer.provide(
               Layer.mergeAll(
-                Layer.succeed(ExtensionSettings, makeSettings(values)),
+                Layer.succeed(ExtensionSettings, makeSettings(plain, secrets, forMember)),
                 Layer.succeed(CurrentExtension, id),
                 Layer.succeed(PageOwner, id),
               ),
@@ -404,6 +502,28 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           yield* SubscriptionRef.set(history, next)
           yield* store.set('jellyware/settings-history', JSON.stringify(next)).pipe(Effect.orDie)
         })
+      /** A change as pages see it: stored secrets as a short mark. */
+      const masked = (change: SettingsChange): SettingsChange => {
+        const secretKeys = new Set(
+          [...Object.entries(change.before), ...Object.entries(change.after)].filter(([, value]) => isStoredSecret(value)).map(([key]) => key),
+        )
+        const mask = (values: Readonly<Record<string, SettingValue>>) =>
+          Object.fromEntries(
+            Object.entries(values).map(([key, value]) => [key, secretKeys.has(key) && typeof value === 'string' ? maskSecret(value) : value]),
+          )
+        return secretKeys.size === 0 ? change : { ...change, before: mask(change.before), after: mask(change.after) }
+      }
+      // One masked list per history, shared by every page that follows it.
+      let lastHistory: ReadonlyArray<SettingsChange> | null = null
+      let lastMasked: ReadonlyArray<SettingsChange> = []
+      const maskedHistory = (list: ReadonlyArray<SettingsChange>) => {
+        if (list !== lastHistory) {
+          lastHistory = list
+          lastMasked = list.map(masked)
+        }
+        return lastMasked
+      }
+
       const settingsLock = yield* Semaphore.make(1)
       const loaded = (id: string) => load(id).pipe(Effect.provideService(Graft.Graph, graph))
       const errorOf = (id: string) =>
@@ -434,34 +554,107 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           return manifest.settings ?? {}
         })
 
+      /** Stores `next(before)` as an extension's values, loads it, and
+       *  records the change. */
+      const change = (
+        id: string,
+        author: string,
+        next: (specs: Readonly<Record<string, SettingSpec>>, before: Readonly<Record<string, SettingValue>>) => Effect.Effect<Readonly<Record<string, SettingValue>>, string>,
+      ) =>
+        settingsLock.withPermits(1)(
+          Effect.gen(function* () {
+            const specs = yield* specsOf(id)
+            const before = effectiveValues(specs, yield* readValues(id))
+            const after = yield* next(specs, before)
+            if (JSON.stringify(after) === JSON.stringify(before)) return yield* Effect.fail('Nothing changed.')
+            const error = yield* apply(id, after, before)
+            const recorded: SettingsChange = {
+              id: `${yield* Clock.currentTimeMillis}-${Math.random().toString(36).slice(2, 6)}`,
+              extension: id,
+              author,
+              at: yield* Clock.currentTimeMillis,
+              before,
+              after,
+              state: error === null ? 'applied' : 'reverted',
+              error,
+            }
+            yield* record(recorded)
+            return masked(recorded)
+          }),
+        )
+
       return Extensions.of({
         changes: SubscriptionRef.changes(statuses),
         current: SubscriptionRef.get(statuses),
         reload: loaded,
         configure: (id, input, author) =>
-          settingsLock.withPermits(1)(
+          change(id, author, (specs, before) =>
             Effect.gen(function* () {
-              const specs = yield* specsOf(id)
               const parsed = parseInput(specs, input)
               if ('errors' in parsed) return yield* Effect.fail(parsed.errors.join(' '))
-              const before = effectiveValues(specs, yield* readValues(id))
-              const after = { ...before, ...parsed.values }
-              if (JSON.stringify(after) === JSON.stringify(before)) return yield* Effect.fail('Nothing changed.')
-              const error = yield* apply(id, after, before)
-              const change: SettingsChange = {
-                id: `${yield* Clock.currentTimeMillis}-${Math.random().toString(36).slice(2, 6)}`,
-                extension: id,
-                author,
-                at: yield* Clock.currentTimeMillis,
-                before,
-                after,
-                state: error === null ? 'applied' : 'reverted',
-                error,
+              const values: Record<string, SettingValue> = { ...before }
+              for (const [key, value] of Object.entries(parsed.values)) {
+                if (specs[key]?.type !== 'secret') {
+                  values[key] = value
+                  continue
+                }
+                if (options.secretKey === undefined) {
+                  return yield* Effect.fail('Secret settings need a key: the app must give the loader a secretKey.')
+                }
+                values[key] = encrypt(options.secretKey, String(value))
               }
-              yield* record(change)
-              return change
+              return values
             }),
           ),
+        clearSecrets: (id, keys, author) =>
+          change(id, author, (specs, before) =>
+            Effect.gen(function* () {
+              const values: Record<string, SettingValue> = { ...before }
+              for (const key of keys) {
+                if (specs[key]?.type !== 'secret') return yield* Effect.fail(`"${key}" is not a secret setting of this extension.`)
+                values[key] = ''
+              }
+              return values
+            }),
+          ),
+        memberSettings: memberId =>
+          Stream.zipLatest(SubscriptionRef.changes(statuses), SubscriptionRef.changes(memberValues)).pipe(
+            Stream.map(([list, all]) =>
+              list.flatMap((status): ReadonlyArray<MemberSettings> => {
+                const fields = status.settings.filter(field => isMemberSetting(field.spec))
+                if (fields.length === 0) return []
+                const specs = Object.fromEntries(fields.map(field => [field.key, field.spec]))
+                const own = ownValues(specs, all[status.id]?.[memberId] ?? {})
+                return [
+                  {
+                    extension: status.id,
+                    name: status.name,
+                    fields: fields.map(field => ({ ...field, value: own[field.key] ?? field.value })),
+                    own: Object.keys(own),
+                  },
+                ]
+              }),
+            ),
+            Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+          ),
+        configureMember: (id, memberId, input) =>
+          Effect.gen(function* () {
+            const all = yield* specsOf(id)
+            const specs = Object.fromEntries(Object.entries(all).filter(([, spec]) => isMemberSetting(spec)))
+            const parsed = parseInput(specs, input)
+            if ('errors' in parsed) return yield* Effect.fail(parsed.errors.join(' '))
+            yield* ensureMemberValues(id)
+            const current = (yield* SubscriptionRef.get(memberValues))[id] ?? {}
+            yield* writeMemberValues(id, { ...current, [memberId]: { ...ownValues(specs, current[memberId] ?? {}), ...parsed.values } })
+          }),
+        resetMember: (id, memberId) =>
+          Effect.gen(function* () {
+            yield* ensureMemberValues(id)
+            const current = (yield* SubscriptionRef.get(memberValues))[id] ?? {}
+            if (!(memberId in current)) return
+            const { [memberId]: _, ...rest } = current
+            yield* writeMemberValues(id, rest)
+          }),
         undoSettings: changeId =>
           settingsLock.withPermits(1)(
             Effect.gen(function* () {
@@ -481,8 +674,8 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
               yield* record({ ...change, state: 'undone' })
             }),
           ),
-        settingsChanges: SubscriptionRef.changes(history),
-        currentSettingsChanges: SubscriptionRef.get(history),
+        settingsChanges: SubscriptionRef.changes(history).pipe(Stream.map(maskedHistory)),
+        currentSettingsChanges: Effect.map(SubscriptionRef.get(history), maskedHistory),
       })
     }),
   )

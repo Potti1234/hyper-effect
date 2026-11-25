@@ -1,4 +1,4 @@
-import { Context, Schema as S } from 'effect'
+import { Context, Effect, Redacted, Schema as S, Stream } from 'effect'
 
 /* Settings of an extension: declared in its extension.json, stored by the
    app (the loader keeps them in the app's KeyValueStore), and given to the
@@ -8,15 +8,33 @@ import { Context, Schema as S } from 'effect'
    way a change of its files does: the new version is mounted next to the
    running one and replaces it only once it is built. A value the extension
    fails with leaves the running version in place, and the loader puts the
-   old values back (see `Extensions.configure`). */
+   old values back (see `Extensions.configure`).
 
-const common = { label: S.String, description: S.optional(S.String) }
+   Two kinds need more than that:
+   - Secret settings (`type: "secret"`), such as a key for another service,
+     are stored encrypted, given to the extension as `Redacted` values, and
+     shown everywhere else only as set or not set: in the browser, the
+     history, the agent's guide. Extension files hold no values, so the
+     agent's copy of them has none either.
+   - Member settings (`scope: "member"`): the administrator's value is the
+     default, and every member may set their own. A member's change does
+     not build the extension again; the extension reads the values of the
+     member it serves while it runs (`forMember`). */
+
+const common = {
+  label: S.String,
+  description: S.optional(S.String),
+  /** `member`: every member may set their own value; the stored value is
+   *  the default. Not for secrets. Default `app`. */
+  scope: S.optional(S.Literals(['app', 'member'])),
+}
 
 export const SettingSpec = S.Union([
   S.Struct({ type: S.Literal('string'), default: S.String, ...common }),
   S.Struct({ type: S.Literal('number'), default: S.Number, min: S.optional(S.Number), max: S.optional(S.Number), ...common }),
   S.Struct({ type: S.Literal('boolean'), default: S.Boolean, ...common }),
   S.Struct({ type: S.Literal('select'), default: S.String, options: S.Array(S.String), ...common }),
+  S.Struct({ type: S.Literal('secret'), ...common }),
 ])
 export type SettingSpec = typeof SettingSpec.Type
 
@@ -25,11 +43,18 @@ export type SettingValue = string | number | boolean
 const isSettingValue = (value: unknown): value is SettingValue =>
   typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
 
-/** One setting as the workshop shows it: its declaration and its value. */
+/** Whether a setting is per member. Secrets never are. */
+export const isMemberSetting = (spec: SettingSpec): boolean => spec.scope === 'member' && spec.type !== 'secret'
+
+const defaultOf = (spec: SettingSpec): SettingValue => ('default' in spec ? spec.default : '')
+
+/** One setting as the workshop shows it: its declaration and its value. A
+ *  secret's value is always empty; `isSet` says whether it has one. */
 export const SettingField = S.Struct({
   key: S.String,
   spec: SettingSpec,
   value: S.Union([S.String, S.Number, S.Boolean]),
+  isSet: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(true))),
 })
 export type SettingField = typeof SettingField.Type
 
@@ -42,7 +67,7 @@ export const effectiveValues = (
   Object.fromEntries(
     Object.entries(specs).map(([key, spec]) => {
       const value = stored[key]
-      return [key, fits(spec, value) === null && isSettingValue(value) ? value : spec.default]
+      return [key, fits(spec, value) === null && isSettingValue(value) ? value : defaultOf(spec)]
     }),
   )
 
@@ -50,6 +75,7 @@ export const effectiveValues = (
 export const fits = (spec: SettingSpec, value: unknown): string | null => {
   switch (spec.type) {
     case 'string':
+    case 'secret':
       return typeof value === 'string' ? null : 'must be text'
     case 'boolean':
       return typeof value === 'boolean' ? null : 'must be on or off'
@@ -64,7 +90,8 @@ export const fits = (spec: SettingSpec, value: unknown): string | null => {
 }
 
 /** Reads the form's text for each declared key as a value of its type, or
- *  answers with what is wrong. Keys not declared are refused. */
+ *  answers with what is wrong. Keys not declared are refused. A secret left
+ *  empty is left out (it keeps its value). */
 export const parseInput = (
   specs: Readonly<Record<string, SettingSpec>>,
   input: Readonly<Record<string, string>>,
@@ -77,6 +104,7 @@ export const parseInput = (
   for (const [key, spec] of Object.entries(specs)) {
     const text = input[key]
     if (text === undefined) continue
+    if (spec.type === 'secret' && text === '') continue
     const value: SettingValue =
       spec.type === 'number' ? (text.trim() === '' ? Number.NaN : Number(text)) : spec.type === 'boolean' ? text === 'true' : text
     const problem = fits(spec, value)
@@ -86,22 +114,46 @@ export const parseInput = (
   return errors.length > 0 ? { errors } : { values }
 }
 
+/** Typed reads of a set of values. */
+export type SettingValues = Readonly<{
+  values: Readonly<Record<string, SettingValue>>
+  string: (key: string) => string
+  number: (key: string) => number
+  boolean: (key: string) => boolean
+}>
+
+export const valuesOf = (values: Readonly<Record<string, SettingValue>>): SettingValues => ({
+  values,
+  string: key => (typeof values[key] === 'string' ? values[key] : ''),
+  number: key => (typeof values[key] === 'number' ? values[key] : 0),
+  boolean: key => values[key] === true,
+})
+
 /** The settings an extension was built with. Read them while building:
- *  a change builds the extension again. */
+ *  a change builds the extension again. `values` and the typed reads hold
+ *  no secrets; `secret` gives one as `Redacted` (`Redacted.value` reads it;
+ *  logged or printed, it shows as `<redacted>`). */
 export class ExtensionSettings extends Context.Service<
   ExtensionSettings,
-  {
-    readonly values: Readonly<Record<string, SettingValue>>
-    readonly string: (key: string) => string
-    readonly number: (key: string) => number
-    readonly boolean: (key: string) => boolean
+  SettingValues & {
+    readonly secret: (key: string) => Redacted.Redacted<string>
+    /** Whether a secret has a value. */
+    readonly hasSecret: (key: string) => boolean
+    /** The values for one member, now and after every change of theirs:
+     *  their own for member settings, the others as above. */
+    readonly forMember: (memberId: string) => Stream.Stream<SettingValues>
   }
 >()('@hyper-effect/jellyware/ExtensionSettings') {}
 
-export const makeSettings = (values: Readonly<Record<string, SettingValue>>) =>
+export const makeSettings = (
+  values: Readonly<Record<string, SettingValue>>,
+  secrets: Readonly<Record<string, string>> = {},
+  forMember: (memberId: string) => Stream.Stream<SettingValues> = () => Stream.succeed(valuesOf(values)),
+) =>
   ExtensionSettings.of({
-    values,
-    string: key => (typeof values[key] === 'string' ? values[key] : ''),
-    number: key => (typeof values[key] === 'number' ? values[key] : 0),
-    boolean: key => values[key] === true,
+    ...valuesOf(values),
+    secret: key => Redacted.make(secrets[key] ?? ''),
+    hasSecret: key => (secrets[key] ?? '') !== '',
+    forMember,
   })
+

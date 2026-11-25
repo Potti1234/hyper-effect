@@ -4,7 +4,7 @@ import { type HostedPage, PageHost } from '@hyper-effect/core'
 
 import { Contributions, type Inventory } from './contributions.ts'
 import { type ExtensionStatus, Extensions } from './loader.ts'
-import type { SettingField } from './settings.ts'
+import { type SettingField, isMemberSetting } from './settings.ts'
 
 /* A guide to what the app has now, written for the agent before each run
    (after bb's generated plugin-commands skill, docs/jellyware/prior-art.md):
@@ -51,9 +51,21 @@ const describeSetting = (field: SettingField) => {
         ? `one of ${spec.options.map(code).join(', ')}`
         : spec.type === 'boolean'
           ? 'on/off'
-          : 'text'
-  const value = typeof field.value === 'boolean' ? (field.value ? 'on' : 'off') : JSON.stringify(field.value)
-  return `${code(field.key)} (${kind}; label: ${spec.label}) is ${value}`
+          : spec.type === 'secret'
+            ? 'secret; read it with `settings.secret(key)`, never show or log it'
+            : 'text'
+  const value =
+    spec.type === 'secret'
+      ? field.isSet
+        ? 'set'
+        : 'not set'
+      : typeof field.value === 'boolean'
+        ? field.value
+          ? 'on'
+          : 'off'
+        : JSON.stringify(field.value)
+  const scope = isMemberSetting(spec) ? '; each member may set their own, read with `settings.forMember(memberId)`' : ''
+  return `${code(field.key)} (${kind}${scope}; label: ${spec.label}) is ${value}`
 }
 
 const STATE: Readonly<Record<ExtensionStatus['state'], string>> = {

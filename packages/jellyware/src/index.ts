@@ -55,5 +55,5 @@ export {
 } from './imports.ts'
 export { type AppPage, type GuideInput, type GuideOptions, type SlotInfo, guide, renderGuide } from './guide.ts'
 export { graph, type Graph, type MountState, type Provided, type Requirement } from './graft.ts'
-export { ExtensionStatus, Extensions, Manifest, SettingsChange, layer, type Options } from './loader.ts'
-export { ExtensionSettings, SettingField, SettingSpec, type SettingValue } from './settings.ts'
+export { ExtensionStatus, Extensions, Manifest, MemberSettings, SettingsChange, layer, type Options } from './loader.ts'
+export { ExtensionSettings, SettingField, SettingSpec, type SettingValue, type SettingValues, isMemberSetting } from './settings.ts'
