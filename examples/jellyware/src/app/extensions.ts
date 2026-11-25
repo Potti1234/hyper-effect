@@ -6,6 +6,7 @@ import { type Options, type PageRequest, PageHost, region, secretFromEnvironment
 import {
   type Badge,
   Contributions,
+  type ExtensionData,
   type ExtensionSettings,
   NavEntry,
   type Provided,
@@ -38,10 +39,11 @@ export const requires = [PageHost, Contributions, Workspace, Viewers, KeyValueSt
 export type Host = Provided<typeof requires>
 
 /** Declares an extension: its default export, checked against `Host`. Its
- *  settings (declared in extension.json) come as `ExtensionSettings`. */
+ *  settings (declared in extension.json) come as `ExtensionSettings`, its
+ *  own database (tables from its migrations) as `ExtensionData`. */
 export const extension = <E>(
-  layer: Layer.Layer<never, E, Host | ExtensionSettings>,
-): Layer.Layer<never, E, Host | ExtensionSettings> => layer
+  layer: Layer.Layer<never, E, Host | ExtensionSettings | ExtensionData>,
+): Layer.Layer<never, E, Host | ExtensionSettings | ExtensionData> => layer
 
 // SLOTS AND COMMANDS
 

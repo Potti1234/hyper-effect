@@ -249,6 +249,28 @@ try {
     check('and goes back to the default', await until(grace.page, () => (document.querySelector('#mine-values-related')?.textContent ?? '').includes('(default)')))
   }
 
+  // DATA OF AN EXTENSION (extensions/pins: its own table)
+  if (target !== null) {
+    await openIssue(ada.page, target)
+    await ada.page.waitForSelector('#card-pins-action-0')
+    if ((await ada.page.textContent('#card-pins-action-0')).includes('Unpin')) {
+      await ada.page.click('#card-pins-action-0')
+      await until(ada.page, () => document.querySelector('#card-pins-action-0')?.textContent?.includes('Pin for me') === true)
+    }
+    await ada.page.click('#card-pins-action-0')
+    check('an extension writes a row of its own table', await until(ada.page, () => document.querySelector('#card-pins-action-0')?.textContent?.includes('Unpin') === true))
+    await ada.page.goto(`${base}/pinned`)
+    check('its page reads it back', await until(ada.page, id => document.querySelector(`#pinned-${id}`) !== null, target))
+    await grace.page.goto(`${base}/pinned`)
+    await grace.page.waitForSelector('#pinned-list')
+    check('rows are per member', (await grace.page.locator(`#pinned-${target}`).count()) === 0)
+    await ada.page.click(`#unpin-${target}`)
+    check('and removes it', await until(ada.page, id => document.querySelector(`#pinned-${id}`) === null, target))
+    await ada.page.goto(`${base}/extensions`)
+    await ada.page.waitForSelector('#extension-data-pins')
+    check('the workshop shows its tables', (await ada.page.textContent('#extension-data-pins')).includes('pins (1 migration)'))
+  }
+
   // SLOTS IN THE ISSUE LISTS
   const openList = async path => {
     const stream = ada.page.waitForRequest(request => request.url().includes('/stream'))
@@ -364,6 +386,12 @@ try {
     const broken = await prompt("replace standup/page.ts :: export const PATH = '/standup' => export const PATH: number = '/standup'")
     check('a change that does not typecheck fails', broken.state === 'failed' && broken.text.includes('TS2322'), broken.state)
     check('and leaves the live extension alone', readFileSync(pageFile, 'utf8') === liveBefore)
+    const migrated = await prompt('replace pins/extension.json :: pinned_at INTEGER NOT NULL => pinned_at INTEGER')
+    check(
+      'a change to an applied migration fails, before anything goes live',
+      migrated.state === 'failed' && migrated.text.includes('Migration 0 differs'),
+      migrated.state,
+    )
     const untested = await prompt('replace stale/extension.ts :: label: `Stale  => label: `Old ')
     check(
       'a change its extension’s own tests reject fails, with the failing test',

@@ -1,0 +1,10 @@
+{
+  "id": "pins",
+  "name": "Pinned issues",
+  "version": "1",
+  "entry": "extension.ts",
+  "description": "Each member pins issues from the issue page and finds them on a page of their own.",
+  "migrations": [
+    "CREATE TABLE pins (member_id TEXT NOT NULL, issue_id TEXT NOT NULL, pinned_at INTEGER NOT NULL, PRIMARY KEY (member_id, issue_id))"
+  ]
+}

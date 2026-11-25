@@ -32,6 +32,7 @@ export default extension(
 )
 ```
 
+- **Data:** an extension declares its tables as append-only `"migrations"` in `extension.json` and reads and writes rows with `ExtensionData`; each has its own SQLite database in `.jellyware/data/`. `extensions/pins` is the reference.
 - **Its own process:** every extension runs in a process of its own, bundled and started with Node's permission model (no files outside its bundle, no network, none of the server's environment); it reaches the app through the services in `src/app/remote.ts`, and its pages run there, the server forwarding their requests. `JELLYWARE_ISOLATION=0` loads extensions into the server instead.
 - **What it may use** is `requires` in `src/app/extensions.ts`: the page host, the sidebar entries, the workspace, viewers and the snapshot store. `extension(...)` checks the layer against that list at compile time.
 - **Pages** are ordinary hyper-effect programs. `src/app/extensions.ts` has the app's shell for them: `loadShell` in flags, `shellChanges` as a Subscription, `frame` around the view.

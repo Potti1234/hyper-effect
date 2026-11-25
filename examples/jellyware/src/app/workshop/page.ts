@@ -962,6 +962,17 @@ const extensionRow = (extension: ExtensionStatus, model: Model, h: HtmlBuilder<M
       ...(adds.length === 0
         ? []
         : [h.p([h.Id(`extension-adds-${extension.id}`), h.Class('mt-0.5 text-[11px]')], [h.span([h.Class('text-muted-foreground')], ['Adds: ']), adds.join(' · ')])]),
+      ...(extension.data === null
+        ? []
+        : [
+            h.p(
+              [h.Id(`extension-data-${extension.id}`), h.Class('mt-0.5 text-[11px]')],
+              [
+                h.span([h.Class('text-muted-foreground')], ['Data: ']),
+                `${extension.data.tables.map(table => table.name).join(', ') || 'no tables'} (${extension.data.migrations} migration${extension.data.migrations === 1 ? '' : 's'})`,
+              ],
+            ),
+          ]),
       ...(extension.error === null
         ? []
         : [h.pre([h.Class('mt-1 max-h-32 overflow-auto text-[11px] whitespace-pre-wrap text-destructive')], [extension.error])]),
