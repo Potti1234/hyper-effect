@@ -13,7 +13,9 @@ export type IslandViewConfig<Props, Event, Message> = Readonly<{
   /** Stable id: morphs keep the island alive by matching it. */
   id: string
   props: Props
-  onEvent: (event: Event) => Message
+  /** Turns the island's events into Messages (null drops one); without
+   *  it, its events are not bound (an island that only shows). */
+  onEvent?: (event: Event) => Message | null
   class?: string
 }>
 
@@ -36,16 +38,23 @@ export const view = <Tag extends string, Props, Event, Message>(
 ): Html => {
   const encodeProps = Schema.encodeUnknownSync(Schema.toCodecJson(spec.Props))
   const decodeEvent = Schema.decodeUnknownOption(Schema.toCodecJson(spec.Event))
-  const onIslandEvent: Attribute<Message> = {
-    _tag: 'OnCustomEvent',
-    name: ISLAND_EVENT,
-    f: (event: CustomEvent<unknown>) => Option.map(decodeEvent(event.detail), config.onEvent),
-  }
+  const onEvent = config.onEvent
+  const onIslandEvent: ReadonlyArray<Attribute<Message>> =
+    onEvent === undefined
+      ? []
+      : [
+          {
+            _tag: 'OnCustomEvent',
+            name: ISLAND_EVENT,
+            f: (event: CustomEvent<unknown>) =>
+              Option.flatMap(decodeEvent(event.detail), decoded => Option.fromNullishOr(onEvent(decoded))),
+          },
+        ]
   const attributes: ReadonlyArray<Attribute<Message>> = [
     h.Id(config.id),
     h.Attribute(PROPS_ATTRIBUTE, JSON.stringify(encodeProps(config.props))),
     h.Class(config.class ?? 'block'),
-    onIslandEvent,
+    ...onIslandEvent,
   ]
   const root = h.div(
     [h.DataAttribute('island-root', ''), h.DataAttribute('ignore-morph', '')],
