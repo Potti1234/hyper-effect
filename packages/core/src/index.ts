@@ -7,7 +7,7 @@
    Island rendering lives in @hyper-effect/island; HTTP test helpers in
    @hyper-effect/core/testing. */
 
-export { DATASTAR_PATH, layer, metricsRoutes, nodeOfPath, pageRoutes, serveDatastar, StylesheetChanges, type Limits, type Options, type PageRoute, type RequestContext } from './server.ts'
+export { DATASTAR_PATH, layer, metricsRoutes, nodeOfPath, pageRoutes, serveDatastar, servedPage, StylesheetChanges, type Limits, type Options, type PageRoute, type RequestContext } from './server.ts'
 export { type HostedPage, PageConflict, PageHost, PageOwner, pageHost } from './page-host.ts'
 export { PageNotFound, PageRedirect, type PageRequest, type Program } from './program.ts'
 export type { ContentSecurityPolicy, Secret } from './security.ts'

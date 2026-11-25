@@ -68,6 +68,13 @@ export class PageHost extends Context.Service<
       program: Program<Model, Message, ClientMessage, Flags, R>,
       options?: Options<R>,
     ) => Effect.Effect<void, PageConflict, Scope.Scope | R | KeyValueStore.KeyValueStore>
+    /** Serves routes under a page's name until the current scope closes,
+     *  as `mount` does for a program: for a page served elsewhere (another
+     *  process), whose routes forward its requests. `drain` closes its live
+     *  sessions with final snapshots when another version takes over. */
+    readonly mountRoutes: (
+      page: Readonly<{ name: string; routes: ReadonlyArray<PageRoute>; drain: Effect.Effect<void> }>,
+    ) => Effect.Effect<void, PageConflict, Scope.Scope>
     /** The names of the pages served now, the newest of each name. */
     readonly names: Effect.Effect<ReadonlyArray<string>>
     /** The pages served now, with their paths and owners. */
@@ -116,7 +123,13 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
         const leaving = served.filter(page => !pages.some(other => other.id === page.id))
         yield* gate.withPermits(GATE)(
           Effect.gen(function* () {
-            for (const page of leaving) yield* page.drain
+            // A drain that fails leaves its sessions to the page's own close;
+            // the switch happens either way.
+            for (const page of leaving) {
+              yield* page.drain.pipe(
+                Effect.catchCause(cause => Effect.logWarning(`hyper-effect: page host: draining ${page.name} failed`, cause)),
+              )
+            }
             served = pages
             handler = next.asHttpEffect()
           }),
@@ -149,14 +162,12 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
       ),
     )
 
-    return PageHost.of({
-      mount: (program, options = {}) =>
+    const mountRoutes = (page: Readonly<{ name: string; routes: ReadonlyArray<PageRoute>; drain: Effect.Effect<void> }>) =>
         Effect.gen(function* () {
-          const { routes, drain } = yield* servedPage(program, options)
           const owner = yield* PageOwner
-          const entry: Mounted = { id: nextId++, name: program.name, owner, routes, drain }
+          const entry: Mounted = { id: nextId++, name: page.name, owner, routes: page.routes, drain: page.drain }
           yield* serve([...mounted, entry]).pipe(
-            Effect.mapError(message => new PageConflict({ page: program.name, message })),
+            Effect.mapError(message => new PageConflict({ page: page.name, message })),
           )
           mounted = [...mounted, entry]
           // Runs before the page's own finalizers: requests stop reaching it,
@@ -177,7 +188,12 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
               )
             }),
           )
-        }),
+        })
+
+    return PageHost.of({
+      mount: (program, options = {}) =>
+        Effect.flatMap(servedPage(program, options), ({ routes, drain }) => mountRoutes({ name: program.name, routes, drain })),
+      mountRoutes,
       names: Effect.sync(() => served.map(page => page.name)),
       pages: Effect.sync(() =>
         served.map(
