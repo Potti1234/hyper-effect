@@ -146,7 +146,13 @@ const Routes = Layer.mergeAll(
   HttpStaticServer.layer({ root: publicFile('assets'), prefix: '/assets' }),
   // Extensions' own islands, each in a sandboxed frame without network.
   Layer.unwrap(
-    Effect.map(Jellyware.Extensions, extensions => Jellyware.frameRoute({ codeOf: extensions.islandCode, stylesheets: ['/styles.css'] })),
+    Effect.map(Jellyware.Extensions, extensions =>
+      Layer.mergeAll(
+        Jellyware.frameRoute({ codeOf: extensions.islandCode, stylesheets: ['/styles.css'] }),
+        // A page reports an island that failed; the workshop shows it.
+        Jellyware.errorRoute({ codeOf: extensions.islandCode, report: extensions.reportIslandError }),
+      ),
+    ),
   ),
 ).pipe(Layer.provideMerge(Changes), Layer.provideMerge(Host))
 

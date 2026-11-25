@@ -31,6 +31,9 @@ describe('chart geometry', () => {
     assert.deepStrictEqual(niceTicks(-3, 5), [-4, -2, 0, 2, 4, 6])
     assert.deepStrictEqual(niceTicks(0, 0), [0, 1])
     assert.deepStrictEqual(niceTicks(1200, 1200), [0, 500, 1000, 1500])
+    // Counts: whole numbers only.
+    assert.deepStrictEqual(niceTicks(0, 9, 4, true), [0, 5, 10])
+    assert.deepStrictEqual(niceTicks(0, 3, 4, true), [0, 1, 2, 3])
   })
 
   it('stacks positive and negative values apart, and skips missing ones', () => {

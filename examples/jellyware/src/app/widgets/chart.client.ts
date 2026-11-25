@@ -142,6 +142,7 @@ const layoutOf = (model: Model): Layout =>
     width: model.width,
     height: model.props.height,
     format: value => formatValue(value, model.props.decimals, ''),
+    integer: model.props.decimals === 0,
   })
 
 /** The series of the bar under a point of the plot; null outside bars. */

@@ -59,6 +59,7 @@ const standup: ExtensionStatus = {
   isolated: false,
   data: null,
   islands: [],
+  islandError: null,
   state: 'active',
   running: 1,
   error: null,
@@ -73,6 +74,7 @@ const related: ExtensionStatus = {
   isolated: false,
   data: null,
   islands: [],
+  islandError: null,
   state: 'active',
   running: 1,
   error: null,
@@ -461,6 +463,7 @@ describe('workshop: the page over HTTP', () => {
         resetMember: () => Effect.void,
         setEnabled: () => Effect.void,
         islandCode: () => Effect.succeedNone,
+        reportIslandError: () => Effect.void,
       }),
     ),
   )

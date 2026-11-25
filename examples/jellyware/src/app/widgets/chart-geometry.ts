@@ -28,16 +28,18 @@ export type Layout = Readonly<{
 
 const STEPS = [1, 2, 2.5, 5, 10]
 
-/** About `count` round ticks from `min` to `max`, covering both. */
-export const niceTicks = (min: number, max: number, count = 4): ReadonlyArray<number> => {
+/** About `count` round ticks from `min` to `max`, covering both; whole
+ *  numbers only with `integer` (counts shown without decimals). */
+export const niceTicks = (min: number, max: number, count = 4, integer = false): ReadonlyArray<number> => {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 1]
   if (min === max) {
     if (max === 0) return [0, 1]
-    return max > 0 ? niceTicks(0, max, count) : niceTicks(min, 0, count)
+    return max > 0 ? niceTicks(0, max, count, integer) : niceTicks(min, 0, count, integer)
   }
   const raw = (max - min) / count
   const magnitude = 10 ** Math.floor(Math.log10(raw))
-  const step = (STEPS.find(each => each * magnitude >= raw) ?? 10) * magnitude
+  const fits = (each: number) => each * magnitude >= raw && (!integer || Number.isInteger(Number((each * magnitude).toPrecision(12))))
+  const step = Math.max(integer ? 1 : 0, (STEPS.find(fits) ?? 10) * magnitude)
   const first = Math.floor(min / step) * step
   const last = Math.ceil(max / step) * step
   const ticks: Array<number> = []
@@ -66,7 +68,17 @@ export const stack = (series: ReadonlyArray<Series>, length: number, stacked: bo
 const labelWidth = (text: string) => text.length * 6.6 + 10
 
 export const layout = (
-  options: Readonly<{ kind: ChartKind; series: ReadonlyArray<Series>; length: number; stacked: boolean; width: number; height: number; format: (value: number) => string }>,
+  options: Readonly<{
+    kind: ChartKind
+    series: ReadonlyArray<Series>
+    length: number
+    stacked: boolean
+    width: number
+    height: number
+    format: (value: number) => string
+    /** Ticks on whole numbers only. */
+    integer?: boolean
+  }>,
 ): Layout => {
   const segments = stack(options.series, options.length, options.stacked)
   const values = segments.flatMap(each => each.flatMap(segment => (segment.value === null ? [] : [segment.base, segment.top])))
@@ -74,7 +86,7 @@ export const layout = (
   const dataMin = values.length === 0 ? 0 : Math.min(...values)
   const dataMax = values.length === 0 ? 1 : Math.max(...values)
   const fromZero = options.kind !== 'line' || dataMin >= 0
-  const yTicks = niceTicks(fromZero ? Math.min(0, dataMin) : dataMin, Math.max(fromZero ? 0 : dataMin, dataMax))
+  const yTicks = niceTicks(fromZero ? Math.min(0, dataMin) : dataMin, Math.max(fromZero ? 0 : dataMin, dataMax), 4, options.integer ?? false)
   const yMin = yTicks[0] ?? 0
   const yMax = yTicks.at(-1) ?? 1
   const left = Math.max(28, ...yTicks.map(tick => labelWidth(options.format(tick))))

@@ -1650,6 +1650,14 @@ const extensionRow = (extension: ExtensionStatus, model: Model, h: HtmlBuilder<M
               [h.span([h.Class('text-muted-foreground')], ['Browser code: ']), `${extension.islands.join(', ')} (sandboxed, no network)`],
             ),
           ]),
+      ...(extension.islandError === null
+        ? []
+        : [
+            h.p(
+              [h.Id(`extension-island-error-${extension.id}`), h.Class('mt-0.5 text-[11px] text-destructive')],
+              [`Its browser code failed in a browser: ${extension.islandError}`],
+            ),
+          ]),
       ...(extension.state === 'disabled'
         ? [h.p([h.Class('mt-1 text-[11px] text-muted-foreground')], ['Turned off: it does not run. Its files, settings and data are kept.'])]
         : []),
