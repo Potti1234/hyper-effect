@@ -57,3 +57,5 @@ export { type AppPage, type GuideInput, type GuideOptions, type SlotInfo, guide,
 export { graph, type Graph, type MountState, type Provided, type Requirement } from './graft.ts'
 export { ExtensionStatus, Extensions, Manifest, MemberSettings, SettingsChange, layer, type Options } from './loader.ts'
 export { ExtensionSettings, SettingField, SettingSpec, type SettingValue, type SettingValues, isMemberSetting } from './settings.ts'
+export { type IsolationOptions, isolatedExtension } from './isolation/parent.ts'
+export { type MemberKind, type RemoteService, remoteService } from './isolation/remote.ts'

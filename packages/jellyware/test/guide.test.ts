@@ -65,6 +65,7 @@ const host = Layer.succeed(
           mounted.push({ name: program.name, paths: [`/${program.name}`], owner })
         }),
       ),
+    mountRoutes: () => Effect.void,
     names: Effect.sync(() => mounted.map(page => page.name)),
     pages: Effect.sync(() => mounted),
   }),

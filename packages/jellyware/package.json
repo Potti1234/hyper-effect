@@ -18,6 +18,7 @@
   "dependencies": {
     "@graftland/graft": "0.7.0",
     "@hyper-effect/core": "0.1.2",
+    "esbuild": "^0.28.2",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {

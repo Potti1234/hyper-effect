@@ -27,6 +27,7 @@ import { PageOwner } from '@hyper-effect/core'
 
 import { CurrentExtension } from './contributions.ts'
 import * as Graft from './graft.ts'
+import { type IsolationOptions, isolatedExtension } from './isolation/parent.ts'
 import { decrypt, encrypt, isStoredSecret, maskSecret } from './secrets.ts'
 import {
   ExtensionSettings,
@@ -97,6 +98,8 @@ export const ExtensionStatus = S.Struct({
   running: S.NullOr(S.Number),
   /** From the manifest. */
   description: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
+  /** Whether it runs in a process of its own. */
+  isolated: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(false))),
   error: S.NullOr(S.String),
   /** The declared settings with the values in effect. */
   settings: S.Array(SettingField),
@@ -199,6 +202,9 @@ export type Options<Requires extends ReadonlyArray<Graft.Requirement>> = Readonl
   watch?: boolean
   /** Encrypts secret settings at rest. Without it, secrets cannot be set. */
   secretKey?: Redacted.Redacted<string>
+  /** Runs every extension in a process of its own (isolation/parent.ts);
+   *  without it, extensions run in this process. */
+  isolation?: IsolationOptions
 }>
 
 /** The member settings of one extension as one member has them: `fields`
@@ -240,7 +246,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
        *  settings. */
       const isExtensionLayer = (
         value: unknown,
-      ): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires> | ExtensionSettings> => Layer.isLayer(value)
+      ): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires> | ExtensionSettings | Graft.Mounting> => Layer.isLayer(value)
 
       const decodeValues = S.decodeUnknownEffect(S.fromJsonString(Values))
       const readValues = (id: string) =>
@@ -346,6 +352,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
             name: manifest.name,
             version: manifest.version,
             description: manifest.description ?? null,
+            isolated: options.isolation !== undefined,
             settings: fieldsOf(specs, values),
           }
           const runningNow = () => running.get(id)?.generation ?? null
@@ -365,22 +372,29 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
 
           const generation = (generations.get(folderUrl(folder)) ?? 0) + 1
           generations.set(folderUrl(folder), generation)
-          const entry = `${pathToFileURL(join(folder, manifest.entry)).href}?jellyware=${generation}`
-          const imported = yield* Effect.tryPromise({
-            try: (): Promise<unknown> => import(entry),
-            catch: error => new LoadError({ message: `Importing ${manifest.entry} failed: ${String(error)}` }),
-          })
-          const extension =
-            typeof imported === 'object' && imported !== null && 'default' in imported ? imported.default : undefined
+          // Its settings (secrets opened; member values read while it runs).
+          const plain = Object.fromEntries(Object.entries(values).filter(([key]) => specs[key]?.type !== 'secret'))
+          const secrets = yield* openSecrets(id, specs, values)
+          // In a process of its own (a new one per version), or imported
+          // into this one under a new generation.
+          const extension = yield* options.isolation !== undefined
+            ? Effect.succeed(
+                isolatedExtension({ id, entry: join(folder, manifest.entry), values: plain, secrets, options: options.isolation }),
+              )
+            : Effect.gen(function* () {
+                const entry = `${pathToFileURL(join(folder, manifest.entry)).href}?jellyware=${generation}`
+                const imported = yield* Effect.tryPromise({
+                  try: (): Promise<unknown> => import(entry),
+                  catch: error => new LoadError({ message: `Importing ${manifest.entry} failed: ${String(error)}` }),
+                })
+                return typeof imported === 'object' && imported !== null && 'default' in imported ? imported.default : undefined
+              })
           if (!isExtensionLayer(extension)) {
             return yield* new LoadError({ message: `${manifest.entry} has no Layer as its default export` })
           }
 
           const scope = yield* Scope.fork(lifetime)
-          // Its settings (secrets opened; member values read while it runs),
-          // and its id as the owner of what it registers.
-          const plain = Object.fromEntries(Object.entries(values).filter(([key]) => specs[key]?.type !== 'secret'))
-          const secrets = yield* openSecrets(id, specs, values)
+          // Its id as the owner of what it registers.
           const forMember = (memberId: string): Stream.Stream<SettingValues> =>
             SubscriptionRef.changes(memberValues).pipe(
               Stream.map(all => ownValues(specs, all[id]?.[memberId] ?? {})),
@@ -440,6 +454,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
                 name: known?.name ?? id,
                 version: known?.version ?? '',
                 description: known?.description ?? null,
+                isolated: options.isolation !== undefined,
                 state: 'failed',
                 running: running.get(id)?.generation ?? null,
                 error: error.message,

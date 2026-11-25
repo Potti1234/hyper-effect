@@ -36,13 +36,19 @@ writeExtension(live, 'shared', 'Shared')
 // Agents wait until released, so the test sees which ones work at once.
 let working = 0
 let mostAtOnce = 0
-const releases: Array<() => void> = []
+/** Finishes the agent working on a prompt, by its first word. */
+const releases = new Map<string, () => void>()
+const release = (word: string) => {
+  const finish = releases.get(word)
+  releases.delete(word)
+  finish?.()
+}
 const agent = (task: Task) =>
   new Promise<string>(resolve => {
     working += 1
     mostAtOnce = Math.max(mostAtOnce, working)
-    releases.push(() => {
-      const [, id = '', label = ''] = /^(\S+) (.*)$/.exec(task.prompt) ?? []
+    const [, id = '', label = ''] = /^(\S+) (.*)$/.exec(task.prompt) ?? []
+    releases.set(label.includes('fourth') ? 'fourth' : id, () => {
       writeExtension(task.stage, id, label)
       working -= 1
       resolve('Done.')
@@ -86,7 +92,7 @@ describe('runs side by side', () => {
           assert.strictEqual(await stateOf(third), 'queued')
 
           // The second finishes first and installs; the third starts.
-          releases[1]!()
+          release('two')
           await finished(second)
           assert.strictEqual(await stateOf(second), 'installed')
           await waitFor(() => working === 2)
@@ -96,12 +102,13 @@ describe('runs side by side', () => {
           // A fourth run on the same extension as the third: whichever
           // installs second is refused, so no change is lost silently.
           const fourth = await start('shared Changed by the fourth')
-          releases[0]!()
+          release('one')
           await finished(first)
           await waitFor(() => working === 2)
-          releases[2]!()
+          release('shared')
           await finished(third)
-          releases[3]!()
+          await waitFor(() => releases.has('fourth'))
+          release('fourth')
           await finished(fourth)
           const done: ReadonlyArray<Run> = await runs()
           const byId = (id: string) => done.find(other => other.id === id)!
