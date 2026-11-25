@@ -87,6 +87,7 @@ The issue page runs only actions it shows (they are in its Model), so a browser 
 Undoing a run puts the extension's files back. Data the extension changed while it ran (an issue marked urgent, an issue taken in Triage) stays changed.
 
 - **Accepted for now:** this matches Powermove, where panel actions also fall outside snapshot rollback. State it on the undo button.
+- **An extension's own tables too** ([data of extensions](#data-of-extensions-built-2026-11-25)): undo keeps their rows, and a migration an undone run applied stays applied. The older version does not know its table; a later version must keep that migration where it is and add new ones after it.
 
 ### Only changed extensions are typechecked
 
@@ -199,9 +200,22 @@ Two bugs of the channel were found on the way and fixed: closing a version left 
 - **Costs:** about 80 MB per process (the five in the example take 400 MB) and half a second to start a version. Every change of the workspace is copied to each process that follows it.
 - **What is left:** the extensions' own tests run in a test runner on the server, with the server's environment removed but not in the permission model. A process that fails is not started again by itself. Isolation stops reach, not intent: an extension can still misuse the services it is given (see [the first risk](#extensions-run-with-the-apps-rights)).
 
+## Data of extensions (built 2026-11-25)
+
+Extensions kept their data in the app's stores (an issue's priority, a member's role). Now each extension may have a SQLite database of its own (Node's `node:sqlite`; `packages/jellyware/src/data.ts`), kept by the server in `.jellyware/data/<id>.sqlite` across versions, undo and restarts, after bb's per-plugin database:
+
+- **Tables from migrations in extension.json** (`"migrations": ["CREATE TABLE pins (...)"]`): data the review diff shows and the checks can read. They are append-only, as in bb: the statement at index n is migration n, its hash is recorded when applied, and a version must declare the applied ones unchanged and in order before new ones. The loader applies new ones in one transaction before it builds the extension; a changed or failing one stops the load.
+- **Checked before a run goes live:** `migrationsCheck` replays a changed extension's migrations on a copy of its database (`VACUUM INTO`, consistent while the server writes; an empty one for a new extension), so "Migration 0 differs from the one applied before … add a new migration after the last one" or a failing statement goes back to the agent like a type error. The browser check runs a scripted change to an applied migration and sees the run fail before anything goes live.
+- **Rows through `ExtensionData`:** `query(sql, params)`, `run(sql, params)`, and `changes`, a counter that grows with every write, to follow from a page. SQLite's authorizer keeps the extension's statements to reading and writing rows of its tables: no `CREATE`/`DROP` outside migrations, no `ATTACH` of another file, no `PRAGMA`, no writes to the table of applied migrations. An extension in its own process gets the same service over the channel; the database stays with the server.
+- **Shown:** the workshop lists an extension's tables and migrations ("Data: pins (1 migration)"); the agent's guide lists tables with their columns and says how many migrations are applied, so the agent appends instead of editing.
+
+`extensions/pins` is the reference: a card on every issue to pin it for oneself, a page /pinned with the member's pins, a table `pins` from one migration. Tests: the authorizer's refusals, append-only and failing migrations, rows across a new version, the check on a copy (package); pin, read back per member, unpin, and the refused migration change (browser check, 75/75).
+
+- **What is left:** one database per extension, on one server ([one server, one folder](#one-server-one-folder)); several servers want the app's Postgres with a schema per extension. No backup or export of an extension's data, and removing an extension leaves its database. The authorizer and `ATTACH` refusal need Node 24 or later.
+
 ## The list
 
-Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 11 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 12 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
 
 ### Done
 
@@ -218,11 +232,11 @@ Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 11 on
 | 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per member. Per workspace not built (one workspace). | Done: [secret and member settings](#secret-and-member-settings-built-2026-11-25) |
 | 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs work side by side (three in the example) instead of one at a time. | Done: [events during a swap](#events-during-a-swap-fixed-2026-11-25), [runs side by side](#runs-side-by-side-built-2026-11-25) |
 | 11 | **A child process per extension**, with a watchdog: bundled, Node's permission model, the app's services over a channel, pages forwarded. | Done: [extensions in their own process](#extensions-in-their-own-process-built-2026-11-25) |
+| 12 | **Data and migrations for extensions.** A SQLite database per extension, append-only migrations declared in extension.json and checked on a copy before a run goes live, rows through `ExtensionData`. | Done: [data of extensions](#data-of-extensions-built-2026-11-25) |
 
 ### Large
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 12 | **Data and migrations for extensions.** Tables of their own with append-only migrations (bb) | Extensions keep their data in the app's stores today | [design.md](design.md#7-data-and-migrations) |
 | 13 | **Browser code in extensions.** Islands built with Vite, with shared runtime shims (bb, Powermove) | Charts, editors and drag previews need the DOM | [design.md](design.md#5-stylesheets) |
 | 14 | **Several servers.** Extensions and runs in the shared store (Postgres); a change feed tells every server to load a new version | [One server, one folder](#one-server-one-folder) | above |

@@ -148,6 +148,7 @@ Credentials: pi and the Codex CLI sign in to the same ChatGPT account, and refre
 
 - Extensions keep state in stores, never in module variables, so it survives a reload.
 - Extension tables use append-only migrations whose index is the id and whose hash is recorded, as in bb (`packages/plugin-sdk/src/internal/host-policy.ts`), on the existing Postgres store.
+- Built on 2026-11-25 with a SQLite database per extension instead of Postgres (the example runs on one server), migrations declared in extension.json and checked on a copy before a run goes live ([open-work.md](open-work.md#data-of-extensions-built-2026-11-25)).
 - Session snapshots need nothing new; see part 1.
 
 ## 8. Trust
