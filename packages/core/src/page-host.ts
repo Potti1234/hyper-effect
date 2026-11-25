@@ -1,9 +1,9 @@
-import { Cause, Context, Data, Effect, Layer, type Scope } from 'effect'
-import { HttpRouter, HttpServerError, type HttpServerResponse } from 'effect/http'
+import { Cause, Context, Data, Effect, Layer, type Scope, Semaphore } from 'effect'
+import { HttpRouter, HttpServerError, HttpServerRequest, type HttpServerResponse } from 'effect/http'
 import type { KeyValueStore } from 'effect/persistence'
 
 import type { Program } from './program.ts'
-import { pageRoutes, serveDatastar, type Options, type PageRoute } from './server.ts'
+import { serveDatastar, servedPage, type Options, type PageRoute } from './server.ts'
 
 /* Pages added and removed while the server runs.
 
@@ -17,8 +17,16 @@ import { pageRoutes, serveDatastar, type Options, type PageRoute } from './serve
    already mounted shadows the earlier one: requests go to the newest, and
    closing it reveals the previous one again. This is how a new version of a
    page replaces the old one without a gap: mount the new one, then close the
-   old one, whose live sessions close and write their snapshots; their
-   browsers reconnect and the new page restores them. */
+   old one.
+
+   Sessions are handed over, not shared: when another version takes over a
+   page's requests (a newer one is mounted, or the newer one closes and the
+   older is revealed), requests wait for a moment, those already running
+   finish, the version that stops serving closes its live sessions with
+   their final snapshots, and only then do requests reach the other version,
+   which restores each session from its snapshot when its browser
+   reconnects. So no event lands in two versions, and no old snapshot
+   overwrites a newer one. */
 
 /** Mounting failed because a route of the page collides with a route of
  *  another mounted page (the same path pattern under a different name). */
@@ -40,7 +48,16 @@ export type HostedPage = Readonly<{
   owner: string | null
 }>
 
-type Mounted = Readonly<{ id: number; name: string; owner: string | null; routes: ReadonlyArray<PageRoute> }>
+type Mounted = Readonly<{
+  id: number
+  name: string
+  owner: string | null
+  routes: ReadonlyArray<PageRoute>
+  drain: Effect.Effect<void>
+}>
+
+/** Permits of the hand-over gate: every request holds one, a hand-over all. */
+const GATE = 1_000_000
 
 export class PageHost extends Context.Service<
   PageHost,
@@ -82,8 +99,12 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
       return [...byName.values()]
     }
 
+    const gate = yield* Semaphore.make(GATE)
+
     /** Builds a router for `all` and serves it, or fails without changing
-     *  what is served when two of its routes collide. */
+     *  what is served when two of its routes collide. The pages that stop
+     *  serving a name another page serves now, or that stop serving, are
+     *  drained first, while requests wait. */
     const serve = (all: ReadonlyArray<Mounted>) =>
       Effect.gen(function* () {
         const pages = newest(all)
@@ -92,8 +113,31 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
         yield* next.addAll(pages.flatMap(page => page.routes)).pipe(
           Effect.catchCause(cause => Effect.fail(String(Cause.squash(cause)))),
         )
-        served = pages
-        handler = next.asHttpEffect()
+        const leaving = served.filter(page => !pages.some(other => other.id === page.id))
+        yield* gate.withPermits(GATE)(
+          Effect.gen(function* () {
+            for (const page of leaving) yield* page.drain
+            served = pages
+            handler = next.asHttpEffect()
+          }),
+        )
+      })
+
+    /** A request to the pages: it waits while a hand-over runs. An event
+     *  stream only waits (it stays open for the life of the page); other
+     *  requests hold a permit until they are answered, so a hand-over waits
+     *  for them. */
+    const toPages = <E,>(error: E) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const run = Effect.suspend(() =>
+          handler === undefined ? Effect.fail(error) : handler.pipe(Effect.catch(() => Effect.fail(error))),
+        )
+        if (new URL(request.url, 'http://localhost').pathname.endsWith('/stream')) {
+          yield* gate.withPermits(1)(Effect.void)
+          return yield* run
+        }
+        return yield* gate.withPermits(1)(run)
       })
 
     yield* serveDatastar(router)
@@ -101,18 +145,16 @@ export const pageHost: Layer.Layer<PageHost, never, HttpRouter.HttpRouter> = Lay
       effect.pipe(
         // Page routes do not fail, so the host's router fails only when
         // none of its routes matched either: then the app's 404 stands.
-        Effect.catchIf(isRouteNotFound, error =>
-          handler === undefined ? Effect.fail(error) : handler.pipe(Effect.catch(() => Effect.fail(error))),
-        ),
+        Effect.catchIf(isRouteNotFound, toPages),
       ),
     )
 
     return PageHost.of({
       mount: (program, options = {}) =>
         Effect.gen(function* () {
-          const routes = yield* pageRoutes(program, options)
+          const { routes, drain } = yield* servedPage(program, options)
           const owner = yield* PageOwner
-          const entry: Mounted = { id: nextId++, name: program.name, owner, routes }
+          const entry: Mounted = { id: nextId++, name: program.name, owner, routes, drain }
           yield* serve([...mounted, entry]).pipe(
             Effect.mapError(message => new PageConflict({ page: program.name, message })),
           )

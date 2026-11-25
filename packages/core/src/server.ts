@@ -842,6 +842,15 @@ export const serveDatastar = (router: HttpRouter.HttpRouter): Effect.Effect<void
 export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags, R>(
   program: Program<Model, Message, ClientMessage, Flags, R>,
   options: Options<R> = {},
+) => Effect.map(servedPage(program, options), page => page.routes)
+
+/** A page's routes, and `drain`: closes every live session with a final
+ *  snapshot while the page keeps serving, so a session asked for again
+ *  starts from that snapshot (here or in a newer version of the page). The
+ *  page host drains a page before another takes over its requests. */
+export const servedPage = <Model, Message, ClientMessage extends Message, Flags, R>(
+  program: Program<Model, Message, ClientMessage, Flags, R>,
+  options: Options<R> = {},
 ) => {
   if (options.node !== undefined && !NODE.test(options.node)) {
     throw new Error(`hyper-effect: node "${options.node}" must be 1–16 lowercase letters or digits.`)
@@ -1035,17 +1044,22 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
           yield* entry.saving.withPermits(1)(store.remove(id).pipe(Effect.ignore))
         })
 
+      /** Closes every live session after writing its final snapshot. */
+      const drain = Effect.gen(function* () {
+        for (const [id, entry] of [...sessions]) {
+          if (entry.snapshots !== undefined) yield* Fiber.interrupt(entry.snapshots)
+          yield* entry.session.close
+          yield* saveSnapshot(entry)
+          entry.closed = true
+          sessions.delete(id)
+        }
+      })
+
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           shuttingDown = true
           yield* Deferred.succeed(stopped, undefined)
-          for (const [id, entry] of sessions) {
-            if (entry.snapshots !== undefined) yield* Fiber.interrupt(entry.snapshots)
-            yield* entry.session.close
-            yield* saveSnapshot(entry)
-            entry.closed = true
-            sessions.delete(id)
-          }
+          yield* drain
         }),
       )
 
@@ -1692,7 +1706,7 @@ export const pageRoutes = <Model, Message, ClientMessage extends Message, Flags,
         Effect.forever,
         Effect.forkScoped,
       )
-      return routes
+      return { routes, drain }
     })
 }
 

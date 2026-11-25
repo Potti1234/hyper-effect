@@ -1,11 +1,12 @@
 import { afterAll, assert, describe, it } from '@effect/vitest'
 import { Context, Effect, Exit, Layer, Scope } from 'effect'
+import { KeyValueStore } from 'effect/persistence'
 import { HttpRouter, HttpServer, HttpServerResponse } from 'effect/http'
 
 import { PageHost, PageOwner, pageHost } from '../src/page-host'
 import type { Program } from '../src/program'
 import { DATASTAR_PATH } from '../src/server'
-import { makeStore, openPage, openStream, readUntil } from '../src/testing'
+import { makeStore, openPage, openStream, postEvent, readUntil, token } from '../src/testing'
 
 import * as Greeter from './fixtures/greeter'
 
@@ -112,6 +113,27 @@ describe('page host', () => {
     const stream = await openStream(server.handler, page)
     assert.strictEqual(stream.status, 200)
     assert.include(await readUntil(stream, 'second version'), 'second version')
+    await closeNew()
+  })
+
+  it('hands sessions over: the old version cannot overwrite what the new one did', async () => {
+    const closeOld = await mount({ ...Greeter.program, name: 'handover' }, '/handover')
+    const page = await openPage(server.handler, '/handover')
+    const increment = (q: number) => postEvent(server.handler, page, { m: token({ _tag: 'ClickedIncrement' }), q })
+    assert.strictEqual((await increment(1)).status, 204)
+    // The new version takes over while the old one is still mounted.
+    const closeNew = await mount({ ...Greeter.program, name: 'handover' }, '/handover')
+    assert.strictEqual((await increment(2)).status, 204)
+    const snapshot = () =>
+      Effect.runPromise(Effect.flatMap(KeyValueStore.KeyValueStore, store => store.get(`hyper/handover/${page.sessionId}`)).pipe(Effect.provide(store)))
+    const countIn = async () => JSON.parse((await snapshot()) ?? '{}').model?.count
+    // The new version's snapshot (written a quiet second after the change).
+    for (let i = 0; i < 60 && (await countIn()) !== 2; i++) await new Promise(resolve => setTimeout(resolve, 50))
+    assert.strictEqual(await countIn(), 2)
+    // Closing the old version writes nothing over it: it handed its session over.
+    await closeOld()
+    assert.strictEqual(await countIn(), 2)
+    assert.include(await readUntil(await openStream(server.handler, page), 'hyper-effect (2)'), 'hyper-effect (2)')
     await closeNew()
   })
 
