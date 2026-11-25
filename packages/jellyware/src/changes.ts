@@ -1,7 +1,7 @@
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
-import { Clock, Context, Data, Effect, Layer, Queue, Schema as S, Semaphore, type Stream, SubscriptionRef } from 'effect'
+import { Clock, Context, Data, Effect, Layer, Queue, Schema as S, Semaphore, Stream, SubscriptionRef } from 'effect'
 
 import { type FileDiff, diffFolders } from './diff.ts'
 import { copyFolder, hashFolder, listFiles, listFolders, mirrorFolder } from './files.ts'
@@ -35,6 +35,11 @@ import { Extensions, Manifest } from './loader.ts'
    5. Record: the run keeps, per extension, the hash before and after. Undo
       puts `before/` back, only while the live folder still has the hash the
       run produced; otherwise newer runs must be undone first.
+
+   Each run keeps its activity (`activity`): what the agent reports while it
+   works (what it says, the tools it calls) and each step above, as it
+   happens. A run started with `thread` follows up a conversation: the
+   agent gets the newest run before it (`Task.previous`) to carry on from.
 
    A run interrupted while installing is put back when the app starts; a
    run waiting for review keeps waiting. Runs are kept in `<workDirectory>/runs/<id>/run.json`. */
@@ -79,8 +84,51 @@ export const Run = S.Struct({
   error: S.NullOr(S.String),
   /** Who approved or rejected it; null without review. */
   reviewer: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
+  /** The first run of the conversation this run follows up; null for the
+   *  first run of one. */
+  thread: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
 })
 export type Run = typeof Run.Type
+
+/** The conversation a run belongs to: the id of its first run. */
+export const threadOf = (run: Run): string => run.thread ?? run.id
+
+export const ActivityState = S.Literals(['running', 'done', 'failed', 'info'])
+export type ActivityState = typeof ActivityState.Type
+
+/** One entry of what happened in a run, in order: what the agent said, a
+ *  tool it called, or a step of the pipeline (an attempt, a check, the
+ *  review, the install). A tool or a step reported again with its id
+ *  replaces the earlier entry, keeping its start (`at`); `until` is when it
+ *  ended. */
+export const Activity = S.Union([
+  S.TaggedStruct('Said', { at: S.Number, text: S.String }),
+  S.TaggedStruct('Tool', {
+    id: S.String,
+    at: S.Number,
+    until: S.NullOr(S.Number),
+    name: S.String,
+    /** What it worked on: a path, a pattern. */
+    target: S.String,
+    state: ActivityState,
+    /** The error, when it failed. */
+    detail: S.NullOr(S.String),
+  }),
+  S.TaggedStruct('Step', {
+    id: S.String,
+    at: S.Number,
+    until: S.NullOr(S.Number),
+    text: S.String,
+    state: ActivityState,
+    detail: S.NullOr(S.String),
+  }),
+])
+export type Activity = typeof Activity.Type
+
+/** What an agent reports while it works; the pipeline adds the times. */
+export type AgentEvent =
+  | Readonly<{ _tag: 'Said'; text: string }>
+  | Readonly<{ _tag: 'Tool'; id: string; name: string; target: string; state: 'running' | 'done' | 'failed'; detail: string | null }>
 
 /** The agent failed to work (not: its result failed a check). */
 export class AgentError extends Data.TaggedError('AgentError')<{ readonly message: string }> {}
@@ -96,6 +144,14 @@ export type Task = Readonly<{
   /** What the app has now (`Options.guide`), made when the run started;
    *  null without one. */
   guide: string | null
+  /** The run this one follows up (the newest before it in its
+   *  conversation), so the agent can carry on from it; null for the first
+   *  run of a conversation. Its changes are live only when it is
+   *  `installed`. */
+  previous: Readonly<{ runDirectory: string; prompt: string; state: RunState; summary: string | null }> | null
+  /** Reports progress (what it says, the tools it calls) to the run's
+   *  activity. */
+  report: (event: AgentEvent) => Effect.Effect<void>
 }>
 
 /** Works on the stage until it is done; answers with a summary. */
@@ -112,6 +168,9 @@ export class UndoRefused extends Data.TaggedError('UndoRefused')<{ readonly mess
 /** An approval, rejection or diff asked for a run that does not have one. */
 export class ReviewRefused extends Data.TaggedError('ReviewRefused')<{ readonly message: string }> {}
 
+/** A follow-up to a conversation that does not exist or still works. */
+export class StartRefused extends Data.TaggedError('StartRefused')<{ readonly message: string }> {}
+
 export class Changes extends Context.Service<
   Changes,
   {
@@ -119,8 +178,11 @@ export class Changes extends Context.Service<
     readonly changes: Stream.Stream<ReadonlyArray<Run>>
     readonly current: Effect.Effect<ReadonlyArray<Run>>
     /** Queues a run; up to `concurrency` work at a time. Answers with its
-     *  id. */
-    readonly start: (prompt: string, author: string) => Effect.Effect<string>
+     *  id. With `thread` (a run id), it follows up that run's conversation:
+     *  the agent carries on from the newest run in it, which must be over. */
+    readonly start: (prompt: string, author: string, thread?: string) => Effect.Effect<string, StartRefused>
+    /** What happened in a run so far, now and after every change. */
+    readonly activity: (runId: string) => Stream.Stream<ReadonlyArray<Activity>>
     readonly undo: (runId: string) => Effect.Effect<void, UndoRefused>
     /** Installs a run waiting for review. The run then is `installed`, or
      *  `failed` when a live extension changed meanwhile or an extension
@@ -245,6 +307,14 @@ const hashTree = (directories: ReadonlyArray<string>) =>
 
 const encodeRun = S.encodeEffect(S.fromJsonString(Run))
 const decodeRun = S.decodeUnknownEffect(S.fromJsonString(Run))
+const encodeActivity = S.encodeEffect(S.fromJsonString(S.Array(Activity)))
+const decodeActivity = S.decodeUnknownEffect(S.fromJsonString(S.Array(Activity)))
+
+/** The entries a run keeps; the oldest go first. */
+const MAX_ACTIVITY = 600
+
+/** Runs that are not over yet. */
+const BUSY: ReadonlySet<RunState> = new Set(['queued', 'working', 'checking'])
 
 /** The change pipeline for the extensions the loader (`Extensions`) runs. */
 export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, never, Extensions | R> =>
@@ -271,6 +341,55 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
       const runs = yield* SubscriptionRef.make<ReadonlyArray<Run>>([])
       const installLock = yield* Semaphore.make(1)
       const directoryOf = (id: string) => join(runsDirectory, id)
+
+      // ACTIVITY: per run in memory once read, kept in `activity.json`.
+      const activities = new Map<string, SubscriptionRef.SubscriptionRef<ReadonlyArray<Activity>>>()
+      const activityLock = yield* Semaphore.make(1)
+      const activityOf = (runId: string) =>
+        Effect.gen(function* () {
+          const known = activities.get(runId)
+          if (known !== undefined) return known
+          const text = yield* Effect.promise(() => readFile(join(directoryOf(runId), 'activity.json'), 'utf8').catch(() => null))
+          const list = text === null ? [] : yield* decodeActivity(text).pipe(Effect.orElseSucceed((): ReadonlyArray<Activity> => []))
+          const again = activities.get(runId)
+          if (again !== undefined) return again
+          const ref = yield* SubscriptionRef.make<ReadonlyArray<Activity>>(list)
+          activities.set(runId, ref)
+          return ref
+        })
+      /** Adds an entry to a run's activity, or replaces the tool or step
+       *  with its id (keeping when it started). */
+      const note = (runId: string, entry: Activity) =>
+        activityLock.withPermits(1)(
+          Effect.gen(function* () {
+            const ref = yield* activityOf(runId)
+            const list = yield* SubscriptionRef.get(ref)
+            const at = entry._tag === 'Said' ? -1 : list.findIndex(other => other._tag === entry._tag && 'id' in other && other.id === entry.id)
+            const next =
+              at === -1
+                ? [...list, entry].slice(-MAX_ACTIVITY)
+                : list.map((other, index) => (index === at ? { ...entry, at: other.at } : other))
+            yield* SubscriptionRef.set(ref, next)
+            const json = yield* encodeActivity(next).pipe(Effect.orDie)
+            yield* Effect.promise(() => writeFile(join(directoryOf(runId), 'activity.json'), json).catch(() => undefined))
+          }),
+        )
+      /** A step of the pipeline: `running` until reported again as done or
+       *  failed; `info` is a note. */
+      const step = (runId: string, id: string, text: string, state: ActivityState, detail: string | null = null) =>
+        Effect.flatMap(Clock.currentTimeMillis, now =>
+          note(runId, { _tag: 'Step', id, at: now, until: state === 'running' || state === 'info' ? null : now, text, state, detail }),
+        )
+      /** Reports an agent's event in a run's activity. */
+      const reportTo = (runId: string, attempt: number) => (event: AgentEvent) =>
+        Effect.flatMap(Clock.currentTimeMillis, now =>
+          note(
+            runId,
+            event._tag === 'Said'
+              ? { _tag: 'Said', at: now, text: event.text }
+              : { ...event, id: `tool-${attempt}-${event.id}`, at: now, until: event.state === 'running' ? null : now },
+          ),
+        )
 
       const FINAL: ReadonlySet<RunState> = new Set(['installed', 'unchanged', 'failed', 'rejected', 'undone'])
       const save = (next: Run) =>
@@ -332,18 +451,29 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           return changes
         })
 
-      /** Checks the snapshot; fails with what the agent should fix. */
-      const check = (snapshot: string, runDirectory: string, changes: ReadonlyArray<ChangedExtension>) =>
+      /** Checks the snapshot; fails with what the agent should fix. Each
+       *  check is a step of the run's activity. */
+      const check = (run: Run, snapshot: string, runDirectory: string, changes: ReadonlyArray<ChangedExtension>) =>
         Effect.gen(function* () {
           const present = changes.filter(change => change.action !== 'removed').map(change => change.id)
-          for (const id of present) {
-            yield* checkManifest(snapshot, id)
-            yield* scanForSecrets(snapshot, id)
-          }
-          for (const each of options.checks) {
-            yield* each
-              .run({ snapshot, runDirectory, changed: present })
-              .pipe(Effect.mapError(message => `${each.name} failed:\n${message}`))
+          const checked = (index: number, name: string, effect: Effect.Effect<void, string>) =>
+            Effect.gen(function* () {
+              const id = `check-${run.attempts}-${index}`
+              yield* step(run.id, id, name, 'running')
+              yield* effect.pipe(Effect.tapError(message => step(run.id, id, name, 'failed', message)))
+              yield* step(run.id, id, name, 'done')
+            })
+          yield* checked(
+            0,
+            'Manifests and credentials',
+            Effect.forEach(present, id => Effect.andThen(checkManifest(snapshot, id), scanForSecrets(snapshot, id)), { discard: true }),
+          )
+          for (const [index, each] of options.checks.entries()) {
+            yield* checked(
+              index + 1,
+              each.name,
+              each.run({ snapshot, runDirectory, changed: present }).pipe(Effect.mapError(message => `${each.name} failed:\n${message}`)),
+            )
           }
         })
 
@@ -375,7 +505,10 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
       const install = (run: Run, snapshot: string, baseline: Hashes, changes: ReadonlyArray<ChangedExtension>) =>
         Effect.gen(function* () {
           const ids = changes.map(change => change.id)
-          yield* keepBefore(run, baseline, changes)
+          const stepId = `install-${yield* Clock.currentTimeMillis}`
+          const installing = `Installing ${ids.join(', ')}`
+          yield* keepBefore(run, baseline, changes).pipe(Effect.tapError(error => step(run.id, stepId, installing, 'failed', error.message)))
+          yield* step(run.id, stepId, installing, 'running')
           yield* save({ ...run, state: 'installing', changes })
           for (const id of ids) {
             yield* Effect.promise(() => mirrorFolder(join(snapshot, id), join(live, id)))
@@ -385,11 +518,11 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           const broken = statuses.filter(status => ids.includes(status.id) && status.state === 'failed')
           if (broken.length > 0) {
             yield* restore(run, changes)
-            return yield* Effect.fail({
-              retry: true,
-              message: broken.map(status => `${status.id} failed to load:\n${status.error ?? ''}`).join('\n\n'),
-            })
+            const message = broken.map(status => `${status.id} failed to load:\n${status.error ?? ''}`).join('\n\n')
+            yield* step(run.id, stepId, `${installing}: it did not load, so it was put back`, 'failed', message)
+            return yield* Effect.fail({ retry: true, message })
           }
+          yield* step(run.id, stepId, `Installed ${ids.join(', ')}: live now`, 'done')
         })
 
       const execute = (queued: Run) =>
@@ -404,18 +537,54 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           const baseline = yield* hashesOf(live, yield* Effect.promise(() => listFolders(live)))
           yield* Effect.promise(() => copyFolder(live, stage))
           const guarded = yield* hashTree(protectedDirectories)
+          // The newest run before this one in its conversation.
+          const earlier = (yield* SubscriptionRef.get(runs)).find(
+            other => other.id !== run.id && threadOf(other) === threadOf(run) && other.startedAt <= run.startedAt,
+          )
+          const previous =
+            earlier === undefined
+              ? null
+              : { runDirectory: directoryOf(earlier.id), prompt: earlier.prompt, state: earlier.state, summary: earlier.summary }
+          /** Sends a failure back to the agent: a note in the activity. */
+          const sendBack = (message: string) =>
+            step(run.id, `retry-${run.attempts}`, `Sent back to the agent to fix (attempt ${run.attempts + 1} of ${maxAttempts})`, 'info').pipe(
+              Effect.as(message),
+            )
+          /** Whether a failed step already shows the error. */
+          const shown = (error: string | null) =>
+            Effect.gen(function* () {
+              const entries = yield* SubscriptionRef.get(yield* activityOf(run.id))
+              return entries.some(entry => entry._tag !== 'Said' && entry.state === 'failed' && entry.detail !== null && (error ?? '').includes(entry.detail))
+            })
+          const end = (next: Run) =>
+            Effect.andThen(
+              next.state === 'failed'
+                ? Effect.flatMap(shown(next.error), known => step(run.id, 'end', 'Failed: nothing went live', 'failed', known ? null : next.error))
+                : next.state === 'unchanged'
+                  ? step(run.id, 'end', 'No extension changed', 'info')
+                  : next.state === 'review'
+                    ? step(run.id, 'end', 'Checks passed. Waiting for review: nothing is live yet', 'info')
+                    : Effect.void,
+              save(next),
+            )
 
           let feedback: string | null = null
           while (true) {
             run = { ...run, state: 'working', attempts: run.attempts + 1 }
             yield* save(run)
-            const answer: string = yield* options.agent.work({ prompt: run.prompt, stage, runDirectory, feedback, guide })
+            const working = `agent-${run.attempts}`
+            const workingText = run.attempts === 1 ? 'The agent works on the change' : `The agent works on what failed (attempt ${run.attempts})`
+            yield* step(run.id, working, workingText, 'running')
+            const answer: string = yield* options.agent
+              .work({ prompt: run.prompt, stage, runDirectory, feedback, guide, previous, report: reportTo(run.id, run.attempts) })
+              .pipe(Effect.tapError(error => step(run.id, working, workingText, 'failed', error.message)))
+            yield* step(run.id, working, workingText, 'done')
             const { declared, summary } = options.declaredChanges === true ? parseDeclared(answer) : { declared: null, summary: answer }
             run = { ...run, summary, state: 'checking' }
             yield* save(run)
 
             if ((yield* hashTree(protectedDirectories)) !== guarded) {
-              return yield* save({
+              return yield* end({
                 ...run,
                 state: 'failed',
                 error: 'The agent changed files outside the extensions. Nothing was installed; check the app sources.',
@@ -429,30 +598,31 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
             const mismatch: string | null =
               options.declaredChanges === true ? declaredMismatch(declared, changes.map(change => change.id)) : null
             if (mismatch !== null) {
+              yield* step(run.id, `declared-${run.attempts}`, 'The extensions the agent named differ from the files it changed', 'failed', mismatch)
               if (run.attempts >= maxAttempts) {
-                return yield* save({ ...run, state: 'failed', changes, error: `The agent's account of its changes did not match:\n${mismatch}` })
+                return yield* end({ ...run, state: 'failed', changes, error: `The agent's account of its changes did not match:\n${mismatch}` })
               }
-              feedback = mismatch
+              feedback = yield* sendBack(mismatch)
               continue
             }
-            if (changes.length === 0) return yield* save({ ...run, state: 'unchanged', changes })
+            if (changes.length === 0) return yield* end({ ...run, state: 'unchanged', changes })
 
             if (options.review === true) {
-              const refused = yield* check(snapshot, runDirectory, changes).pipe(
+              const refused = yield* check(run, snapshot, runDirectory, changes).pipe(
                 Effect.mapError(message => ({ retry: true, message })),
                 Effect.flatMap(() => installLock.withPermits(1)(keepBefore(run, baseline, changes))),
                 Effect.as(null),
                 Effect.catch(error => Effect.succeed(error)),
               )
-              if (refused === null) return yield* save({ ...run, state: 'review', changes })
+              if (refused === null) return yield* end({ ...run, state: 'review', changes })
               if (!refused.retry || run.attempts >= maxAttempts) {
-                return yield* save({ ...run, state: 'failed', changes, error: refused.message })
+                return yield* end({ ...run, state: 'failed', changes, error: refused.message })
               }
-              feedback = refused.message
+              feedback = yield* sendBack(refused.message)
               continue
             }
 
-            const problem: { retry: boolean; message: string } | null = yield* check(snapshot, runDirectory, changes).pipe(
+            const problem: { retry: boolean; message: string } | null = yield* check(run, snapshot, runDirectory, changes).pipe(
               Effect.flatMap(() => installLock.withPermits(1)(install(run, snapshot, baseline, changes))),
               Effect.as(null),
               Effect.catch(error => Effect.succeed(typeof error === 'string' ? { retry: true, message: error } : error)),
@@ -461,15 +631,18 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
               return yield* save({ ...run, state: 'installed', changes })
             }
             if (!problem.retry || run.attempts >= maxAttempts) {
-              return yield* save({ ...run, state: 'failed', changes, error: problem.message })
+              return yield* end({ ...run, state: 'failed', changes, error: problem.message })
             }
-            feedback = problem.message
+            feedback = yield* sendBack(problem.message)
           }
         }).pipe(
           Effect.catchTag('AgentError', error =>
             Effect.flatMap(SubscriptionRef.get(runs), list => {
               const latest = list.find(other => other.id === queued.id) ?? queued
-              return save({ ...latest, state: 'failed', error: `The agent failed: ${error.message}` })
+              return Effect.andThen(
+                step(queued.id, 'end', 'Failed: the agent stopped', 'failed', error.message),
+                save({ ...latest, state: 'failed', error: `The agent failed: ${error.message}` }),
+              )
             }),
           ),
           Effect.withSpan('jellyware.run', { attributes: { run: queued.id } }),
@@ -500,8 +673,21 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
       return Changes.of({
         changes: SubscriptionRef.changes(runs),
         current: SubscriptionRef.get(runs),
-        start: (prompt, author) =>
+        start: (prompt, author, thread) =>
           Effect.gen(function* () {
+            // A follow-up joins the conversation of the run it names, once
+            // the newest run there is over.
+            let root: string | null = null
+            if (thread !== undefined) {
+              const list = yield* SubscriptionRef.get(runs)
+              const named = list.find(other => other.id === thread)
+              if (named === undefined) return yield* new StartRefused({ message: `No run ${thread}.` })
+              root = threadOf(named)
+              const newest = list.find(other => threadOf(other) === root)
+              if (newest !== undefined && BUSY.has(newest.state)) {
+                return yield* new StartRefused({ message: 'The agent is still working on this conversation. Wait until it is done.' })
+              }
+            }
             const now = yield* Clock.currentTimeMillis
             const id = `${new Date(now).toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`
             yield* Effect.promise(() => mkdir(directoryOf(id), { recursive: true }))
@@ -517,11 +703,20 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
               summary: null,
               error: null,
               reviewer: null,
+              thread: root,
             }
             yield* save(run)
             yield* Queue.offer(queue, run)
             return id
           }),
+        activity: runId =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const known = (yield* SubscriptionRef.get(runs)).some(other => other.id === runId)
+              if (!known) return Stream.succeed<ReadonlyArray<Activity>>([])
+              return SubscriptionRef.changes(yield* activityOf(runId))
+            }),
+          ),
         undo: runId =>
           installLock.withPermits(1)(
             Effect.gen(function* () {
@@ -538,6 +733,7 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
                 })
               }
               yield* restore(run, run.changes)
+              yield* step(run.id, `undo-${yield* Clock.currentTimeMillis}`, 'Undone: the extensions are as they were before', 'info')
               yield* save({ ...run, state: 'undone' })
             }),
           ),
@@ -547,6 +743,7 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
               const run = yield* inReview(runId)
               const baseline: Hashes = new Map(run.changes.map(change => [change.id, change.before]))
               const reviewed: Run = { ...run, reviewer }
+              yield* step(run.id, 'review', `Approved by ${reviewer}`, 'done')
               const problem = yield* install(reviewed, join(directoryOf(run.id), 'snapshot'), baseline, run.changes).pipe(
                 Effect.as(null),
                 Effect.catch(error => Effect.succeed(error.message)),
@@ -558,6 +755,7 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           installLock.withPermits(1)(
             Effect.gen(function* () {
               const run = yield* inReview(runId)
+              yield* step(run.id, 'review', `Rejected by ${reviewer}: nothing went live`, 'info')
               yield* save({ ...run, state: 'rejected', reviewer })
             }),
           ),

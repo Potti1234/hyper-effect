@@ -73,6 +73,10 @@ import {
    kept apart (`configureMember`) and reach the running extension through
    `ExtensionSettings.forMember`, without a new build.
 
+   An extension can be turned off (`setEnabled`): it is unloaded and stays
+   unloaded, across restarts and changes of its files, until it is turned on
+   again. Its folder, settings and data stay.
+
    Old generations stay in Node's module cache until the process restarts. */
 
 export const Manifest = S.Struct({
@@ -95,8 +99,9 @@ export const ExtensionStatus = S.Struct({
   name: S.String,
   version: S.String,
   /** What happened to the latest version: being loaded, running, waiting
-   *  for a service it requires, or failed (to import, to build, or later). */
-  state: S.Literals(['loading', 'active', 'pending', 'failed']),
+   *  for a service it requires, failed (to import, to build, or later), or
+   *  turned off. */
+  state: S.Literals(['loading', 'active', 'pending', 'failed', 'disabled']),
   /** The generation serving now; null while no version runs. */
   running: S.NullOr(S.Number),
   /** From the manifest. */
@@ -160,6 +165,10 @@ export class Extensions extends Context.Service<
     readonly configureMember: (id: string, memberId: string, input: Readonly<Record<string, string>>) => Effect.Effect<void, string>
     /** Puts a member back on the defaults of an extension's settings. */
     readonly resetMember: (id: string, memberId: string) => Effect.Effect<void>
+    /** Turns an extension off (unloads it until it is turned on) or on
+     *  (loads it again); fails with a line for the member when there is no
+     *  such extension. */
+    readonly setEnabled: (id: string, enabled: boolean) => Effect.Effect<void, string>
   }
 >()('@hyper-effect/jellyware/Extensions') {}
 
@@ -248,6 +257,14 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
       const graph = yield* Graft.Graph
       const store = yield* KeyValueStore.KeyValueStore
       const stored = KeyValueStore.prefix(store, 'jellyware/settings/')
+      // The extensions turned off, by id.
+      const decodeIds = S.decodeUnknownEffect(S.fromJsonString(S.Array(S.String)))
+      const disabled = new Set(
+        yield* store.get('jellyware/disabled').pipe(
+          Effect.flatMap(text => (text === undefined ? Effect.succeed([]) : decodeIds(text))),
+          Effect.orElseSucceed((): ReadonlyArray<string> => []),
+        ),
+      )
 
       /** The narrowing an extension's own typecheck stands behind: its
        *  default export is declared against the app's host services and its
@@ -382,6 +399,30 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           const specs = manifest.settings ?? {}
           const values = effectiveValues(specs, yield* readValues(id))
           yield* ensureMemberValues(id)
+          // Turned off: unloaded, but listed with what it would have.
+          if (disabled.has(id)) {
+            const previous = running.get(id)
+            running.delete(id)
+            attempted.delete(id)
+            if (previous !== undefined) {
+              yield* Scope.close(previous.scope, Exit.void)
+              yield* Effect.logInfo(`jellyware: ${id} turned off`)
+            }
+            const existing = yield* databaseOf(id, false)
+            const summary = existing === null ? null : summarize(existing.db)
+            return yield* setStatus({
+              id,
+              name: manifest.name,
+              version: manifest.version,
+              description: manifest.description ?? null,
+              isolated: options.isolation !== undefined,
+              data: summary !== null && (summary.migrations > 0 || summary.tables.length > 0) ? summary : null,
+              settings: fieldsOf(specs, values),
+              state: 'disabled',
+              running: null,
+              error: null,
+            })
+          }
           // Its database: new migrations first; one that is changed or fails
           // stops the load.
           const migrations = manifest.migrations ?? []
@@ -710,6 +751,17 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
             const current = (yield* SubscriptionRef.get(memberValues))[id] ?? {}
             yield* writeMemberValues(id, { ...current, [memberId]: { ...ownValues(specs, current[memberId] ?? {}), ...parsed.values } })
           }),
+        setEnabled: (id, enabled) =>
+          settingsLock.withPermits(1)(
+            Effect.gen(function* () {
+              yield* specsOf(id)
+              if (enabled === !disabled.has(id)) return
+              if (enabled) disabled.delete(id)
+              else disabled.add(id)
+              yield* store.set('jellyware/disabled', JSON.stringify([...disabled].sort())).pipe(Effect.orDie)
+              yield* loaded(id)
+            }),
+          ),
         resetMember: (id, memberId) =>
           Effect.gen(function* () {
             yield* ensureMemberValues(id)

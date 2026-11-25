@@ -8,16 +8,21 @@
        .pipe(Layer.provide(graph), Layer.provide([pageHost, Contributions.layer, ...])) */
 
 export {
+  Activity,
+  ActivityState,
   type Agent,
   AgentError,
+  type AgentEvent,
   ChangedExtension,
   Changes,
   type Check,
   Run,
   ReviewRefused,
   RunState,
+  StartRefused,
   type Task,
   UndoRefused,
+  threadOf,
   declaredMismatch,
   layer as changesLayer,
   parseDeclared,

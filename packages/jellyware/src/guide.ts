@@ -73,6 +73,7 @@ const STATE: Readonly<Record<ExtensionStatus['state'], string>> = {
   loading: 'loading',
   pending: 'waiting for a service it requires',
   failed: 'failed',
+  disabled: 'turned off by an administrator (its files are kept; it does not run)',
 }
 
 /** The guide as Markdown. */
