@@ -17,7 +17,8 @@ Extension code runs in the server process. `requires` (`examples/jellyware/src/a
 
   The failure goes back to the agent like a type error. `test/extension-rules.test.ts` checks that every extension in the folder follows the rules.
 - **What the check misses:** it reads what the code says. Code built to get around it can (a chain of property accesses on an allowed object that reaches a constructor, for example), and an allowed module that gains a dangerous export opens a hole until the rules name it. Extensions written by hand and loaded at start are not checked; only runs are.
-- **Removes it:** run each extension in a child process (`graft/node`, [design.md](design.md#8-trust)); it then gets only the services served to it.
+- **Since 2026-11-25** every extension runs in a process of its own ([extensions in their own process](#extensions-in-their-own-process-built-2026-11-25)): what the import check misses, Node's permission model stops (no file outside its bundle, no network, no child processes, none of the server's environment), and it reaches the app only through the services the app lists for it.
+- **What is left:** the services it is given are real power. `Workspace.update(changes, actorId)` takes the acting member from the caller, so an extension can change issues in any member's name; the app decides which members it shares (`src/app/remote.ts` leaves out `setRole` and `remove`). An app that wants more passes the member from the request instead of trusting the extension.
 
 ### Who may change the app (roles and review since 2026-11-24)
 
@@ -53,11 +54,11 @@ Before each attempt the agent copies the Codex CLI's ChatGPT access token to `.j
 - **What is left:** while pi runs, the file is readable by anyone with access to the folder. The token is valid for about ten days. On Windows the `0600` file mode is not applied.
 - **Removes it:** pi's credential commands (a key starting with `!` in its `auth.json`) would hand pi the token without a file. They are documented for API keys; whether they work for the `openai-codex` OAuth credential is not checked.
 
-### One extension can stop the server
+### One extension can stop the server (fixed 2026-11-25)
 
-An extension that loops without yielding, allocates without bound, or calls `process.exit` stops every page of the app, not only its own. Graft's `Failed` state and retries cover failures, not a blocked event loop.
+An extension that looped without yielding, allocated without bound, or called `process.exit` stopped every page of the app. Now it stops its own process: a watchdog asks every second, and a process that does not answer within five seconds is killed and the extension shows as failed with "did not answer for 5 seconds (a blocked event loop?)". A test blocks an extension's event loop and sees exactly that; the app keeps serving.
 
-- **Removes it:** the child process of the first risk, with a watchdog (Powermove kills sandboxed extensions that stop answering for 8 seconds).
+- **What is left:** a failed extension stays failed until its files or settings change, or the server restarts; no automatic restart with backoff yet.
 
 ### Events during a swap (fixed 2026-11-25)
 
@@ -67,12 +68,9 @@ Since 2026-11-25 the page host hands sessions over (`packages/core/src/page-host
 
 - **What is left:** an event stream that was answered by the old version just before the hand-over started can reach it once more; the window is the time between checking the gate and reading the router, microseconds. Requests wait while the old version writes its snapshots, a few milliseconds per open session.
 
-### Old versions stay in memory
+### Old versions stay in memory (fixed 2026-11-25)
 
-Every load imports the extension's modules under a new URL. Node never frees a module, so each version stays in memory until the server restarts. Not measured yet.
-
-- **Limits today:** a restart frees them.
-- **Removes it:** measure memory per version; then the child process (a restarted process loses its old modules), or periodic restarts.
+Every load used to import the extension's modules under a new URL into the server, where Node never frees them. Each version now is a process of its own, stopped after the swap: its modules leave with it. In-process loading (`JELLYWARE_ISOLATION=0`) still keeps them.
 
 ### One slow card hides the others in its slot (fixed)
 
@@ -184,9 +182,26 @@ What several runs share had to cope: pi's credentials file now exists while at l
 
 - **What is left:** a refused run must be run again by hand; it could instead start again from the new live files.
 
+## Extensions in their own process (built 2026-11-25)
+
+With the loader's `isolation` option (on in the example; `JELLYWARE_ISOLATION=0` turns it off) each version of an extension runs in a process of its own (`packages/jellyware/src/isolation/`):
+
+- **Bundled and fenced.** esbuild bundles the extension, the app modules and packages it imports, and the process runtime into one file in a folder of its own (`.jellyware/bundles/<id>/…`, removed when the version stops; about 2 MB and 0.2 s). The process starts with Node's permission model and may read that folder only: no other file (the repository, `.jellyware`, `.env`), no network (`--allow-net` is not given), no child processes or workers. Its environment holds `PATH` and the like, and what the app adds: a snapshot secret derived for this extension, never the server's.
+- **A channel both ways** (`bridge.ts`, over Node's IPC): calls, streams and registrations that last a scope, each way. Failures cross as plain data, a tagged failure keeps its `_tag`.
+- **What the process gets** (`child.ts`): stand-ins of the app's services as the app describes them (`remoteService(Workspace, { current: 'value', changes: 'stream', update: 'call', … })`, in a module both sides import, `src/app/remote.ts`), the registry (entries live in the server, so the app's pages and the guide see them; content and commands are asked of the process and checked against their Schemas when they come back), a key-value store limited to keys under `isolated/<id>/`, the stylesheet changes and the member settings.
+- **Pages run in the process.** The extension mounts them on a page host of its own, served by a web handler; the server mounts forwarding routes for them on its page host (`PageHost.mountRoutes`, new in core), forwards each request, event streams included, and drains the process's sessions when another version takes over. Who is signed in comes in the header `x-jellyware-principal`, which the server sets and a browser cannot: the process never holds the sign-in secret (`src/app/auth.ts` reads the header when `JELLYWARE_ISOLATED=1`).
+- **The watchdog** (see [one extension can stop the server](#one-extension-can-stop-the-server-fixed-2026-11-25)) and **a process per version** (see [old versions](#old-versions-stay-in-memory-fixed-2026-11-25)).
+
+Tested: a package test starts a real process (its card and commands answered there, a tagged failure arriving as itself, a file outside its folder refused with `ERR_ACCESS_DENIED`, a blocked event loop stopped by the watchdog); both browser checks pass with every extension in its own process (69/69 and 53/53), swaps, session restores, Tailwind classes, unload, settings, secrets, slots and runs included.
+
+Two bugs of the channel were found on the way and fixed: closing a version left streams forwarded to browsers open (now closing one end ends what waits on it, so browsers reconnect to the new version), and a version's last snapshot writes went unanswered while it closed (the channel now runs in a scope of its own, closed last).
+
+- **Costs:** about 80 MB per process (the five in the example take 400 MB) and half a second to start a version. Every change of the workspace is copied to each process that follows it.
+- **What is left:** the extensions' own tests run in a test runner on the server, with the server's environment removed but not in the permission model. A process that fails is not started again by itself. Isolation stops reach, not intent: an extension can still misuse the services it is given (see [the first risk](#extensions-run-with-the-apps-rights)).
+
 ## The list
 
-Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 and 10 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 11 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
 
 ### Done
 
@@ -202,12 +217,12 @@ Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 and 10 o
 | 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | Done: [better checks](#better-checks-built-2026-11-24) |
 | 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per member. Per workspace not built (one workspace). | Done: [secret and member settings](#secret-and-member-settings-built-2026-11-25) |
 | 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs work side by side (three in the example) instead of one at a time. | Done: [events during a swap](#events-during-a-swap-fixed-2026-11-25), [runs side by side](#runs-side-by-side-built-2026-11-25) |
+| 11 | **A child process per extension**, with a watchdog: bundled, Node's permission model, the app's services over a channel, pages forwarded. | Done: [extensions in their own process](#extensions-in-their-own-process-built-2026-11-25) |
 
 ### Large
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 11 | **A child process per extension**, with a watchdog | Isolation (the real fix for item 2), memory of old versions, a blocked event loop | [design.md](design.md#8-trust) |
 | 12 | **Data and migrations for extensions.** Tables of their own with append-only migrations (bb) | Extensions keep their data in the app's stores today | [design.md](design.md#7-data-and-migrations) |
 | 13 | **Browser code in extensions.** Islands built with Vite, with shared runtime shims (bb, Powermove) | Charts, editors and drag previews need the DOM | [design.md](design.md#5-stylesheets) |
 | 14 | **Several servers.** Extensions and runs in the shared store (Postgres); a change feed tells every server to load a new version | [One server, one folder](#one-server-one-folder) | above |

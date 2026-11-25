@@ -154,7 +154,9 @@ Credentials: pi and the Codex CLI sign in to the same ChatGPT account, and refre
 
 A first version trusts extensions written by the team's agent: they run in the server process. Recovery comes from Graft (`Failed`, `retry`), automatic disabling after repeated failures, and undo per run.
 
-What in-process code can still do: block the event loop, call `process.exit`, read environment variables and secrets, use any host service. This is acceptable for a team's own instance and not for extensions written by end users. For those, the extension runs in a child process through `graft/node`, and the services served to it over `Remote` are what it may use. A page in that process cannot share the host's session loop, so either the whole page runs in the child behind a proxied route, or each event crosses the process boundary. Which of the two is open.
+What in-process code can still do: block the event loop, call `process.exit`, read environment variables and secrets, use any host service. This is acceptable for a team's own instance and not for extensions written by end users. For those, the extension runs in a child process, and the services served to it are what it may use. A page in that process cannot share the host's session loop, so either the whole page runs in the child behind a proxied route, or each event crosses the process boundary.
+
+Built on 2026-11-25 ([open-work.md](open-work.md#extensions-in-their-own-process-built-2026-11-25)): the whole page runs in the child behind forwarding routes. Not over Graft's `Remote`, which serves services in one direction per connection (the spawning side is the client); an extension needs both directions, so a small channel over Node's IPC carries calls, streams and scoped registrations each way.
 
 ## Changes to `@hyper-effect/core`
 
