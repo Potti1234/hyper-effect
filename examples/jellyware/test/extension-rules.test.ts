@@ -18,7 +18,7 @@ import { type Guard, decide, parseGuard } from '@/pi-guard'
 const extensions = fileURLToPath(new URL('../extensions', import.meta.url))
 
 describe('import rules', () => {
-  for (const id of ['standup', 'related', 'triage', 'progress', 'stale', 'pins', 'team-map']) {
+  for (const id of ['standup', 'related', 'triage', 'progress', 'stale', 'pins', 'team-map', 'activity']) {
     it.effect(`${id} follows them`, () =>
       Effect.gen(function* () {
         assert.deepStrictEqual(yield* checkFolder(join(extensions, id), importRules), [])

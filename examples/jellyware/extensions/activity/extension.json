@@ -1,0 +1,10 @@
+{
+  "id": "activity",
+  "name": "Activity",
+  "version": "1",
+  "entry": "extension.ts",
+  "description": "A calendar of the workspace's activity, day by day: hover a day for its changes, click it to list them. The calendar is the extension's own browser code.",
+  "islands": {
+    "calendar": "calendar.island.ts"
+  }
+}

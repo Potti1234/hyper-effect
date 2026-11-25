@@ -1642,6 +1642,14 @@ const extensionRow = (extension: ExtensionStatus, model: Model, h: HtmlBuilder<M
               ],
             ),
           ]),
+      ...(extension.islands.length === 0
+        ? []
+        : [
+            h.p(
+              [h.Id(`extension-islands-${extension.id}`), h.Class('mt-0.5 text-[11px]')],
+              [h.span([h.Class('text-muted-foreground')], ['Browser code: ']), `${extension.islands.join(', ')} (sandboxed, no network)`],
+            ),
+          ]),
       ...(extension.state === 'disabled'
         ? [h.p([h.Class('mt-1 text-[11px] text-muted-foreground')], ['Turned off: it does not run. Its files, settings and data are kept.'])]
         : []),
@@ -1697,6 +1705,7 @@ const extensionsSection = (model: Model, h: HtmlBuilder<Message>): Html =>
  *  where the page cannot tell (charts and maps are in extensions' code). */
 const filledBy = (model: Model, customization: Customization): ReadonlyArray<string> | null => {
   if (customization.id === 'charts' || customization.id === 'maps') return null
+  if (customization.id === 'islands') return model.extensions.filter(extension => extension.islands.length > 0).map(extension => extension.name)
   const nameOf = (owner: string | null) =>
     owner === null ? 'the app' : (model.extensions.find(extension => extension.id === owner)?.name ?? owner)
   const owners =

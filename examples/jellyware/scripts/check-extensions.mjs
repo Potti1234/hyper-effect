@@ -37,6 +37,8 @@ const entryFile = join(folder, 'extension.ts')
 const originalEntry = readFileSync(entryFile, 'utf8')
 const RUN_TIMEOUT = 5 * 60 * 1000
 const parked = join(tmpdir(), `jellyware-standup-${Date.now()}`)
+const calendarFile = fileURLToPath(new URL('../extensions/activity/calendar.ts', import.meta.url))
+const originalCalendar = readFileSync(calendarFile, 'utf8')
 
 const results = []
 const check = (name, ok, detail = '') => {
@@ -337,6 +339,68 @@ try {
     check('and the island rings it', await until(ada.page, () => document.querySelector('[data-place="Helsinki"]')?.className.includes('ring-4') === true))
   }
 
+  // AN EXTENSION'S OWN BROWSER CODE (extensions/activity: an island in a sandboxed frame)
+  {
+    await ada.page.goto(`${base}/activity`)
+    await ada.page.waitForSelector('jellyware-island iframe', { timeout: TIMEOUT })
+    const calendar = ada.page.frameLocator('jellyware-island iframe')
+    await calendar.locator('button[data-date]').first().waitFor({ timeout: TIMEOUT })
+    check('an extension’s island runs in its frame', (await calendar.locator('button[data-date]').count()) === 140)
+    check('a sandboxed one, scripts only', (await ada.page.getAttribute('jellyware-island iframe', 'sandbox')) === 'allow-scripts')
+    const inside = ada.page.frames().find(frame => frame.url().includes('/_jellyware/islands/activity/calendar/'))
+    const probe = await inside.evaluate(async () => {
+      const blocked = async run => {
+        try {
+          await run()
+          return false
+        } catch {
+          return true
+        }
+      }
+      return {
+        cookie: await blocked(() => document.cookie),
+        page: await blocked(() => window.parent.document.title),
+        network: await blocked(() => fetch('/team/ENG')),
+        storage: await blocked(() => localStorage.setItem('x', '1')),
+      }
+    })
+    check(
+      'without cookies, storage, network or the page',
+      probe.cookie && probe.page && probe.network && probe.storage,
+      JSON.stringify(probe),
+    )
+    await calendar.locator('button[data-date]').nth(130).hover()
+    check('its tooltip shows on hover', await calendar.locator('[data-calendar-tooltip]').textContent().then(text => /change/.test(text ?? ''), () => false))
+    const busiest = await calendar.locator('button[data-date]').evaluateAll(cells =>
+      cells.map(cell => [cell.dataset.date, Number(/: (\d+) changes/.exec(cell.getAttribute('aria-label') ?? '')?.[1] ?? 0)]).sort((a, b) => b[1] - a[1])[0][0],
+    )
+    await calendar.locator(`button[data-date="${busiest}"]`).click()
+    check(
+      'a click in the island reaches the page’s update',
+      await until(ada.page, date => (document.querySelector('#activity-day h2')?.textContent ?? '').includes(date), busiest),
+    )
+    // A new version of the island reaches the open page.
+    await ada.page.evaluate(() => {
+      window.__sameDocument = true
+    })
+    const before = await ada.page.getAttribute('jellyware-island iframe', 'src')
+    writeFileSync(calendarFile, originalCalendar.replace("['Less', ...STEPS", "['Fewer', ...STEPS"))
+    check(
+      'a new version of the island reloads its frame on the open page',
+      await ada.page
+        .waitForFunction(old => document.querySelector('jellyware-island iframe')?.getAttribute('src') !== old, before, { timeout: 60000 })
+        .then(
+          () => calendar.locator('text=Fewer').waitFor({ timeout: TIMEOUT }).then(() => true, () => false),
+          () => false,
+        ),
+    )
+    check('without reloading the page', await ada.page.evaluate(() => window.__sameDocument === true))
+    writeFileSync(calendarFile, originalCalendar)
+    await ada.page.goto(`${base}/extensions`)
+    await ada.page.waitForSelector('#extension-islands-activity')
+    check('the workshop lists the extension’s browser code', (await ada.page.textContent('#extension-islands-activity')).includes('calendar'))
+  }
+
   // SLOTS IN THE ISSUE LISTS
   const openList = async path => {
     const stream = ada.page.waitForRequest(request => request.url().includes('/stream'))
@@ -383,7 +447,7 @@ try {
   check('a section opens from the second sidebar', await until(ada.page, () => document.querySelector('#workshop-customize') !== null && location.pathname === '/extensions/customize'))
   check('within the session', await ada.page.evaluate(() => window.__sameDocument === true))
   await ada.page.waitForTimeout(300)
-  check('the workshop lists every place an extension can change', (await ada.page.locator('#workshop-customize > ul > li').count()) === 7)
+  check('the workshop lists every place an extension can change', (await ada.page.locator('#workshop-customize > ul > li').count()) === 8)
   check(
     'with what fills each now',
     (await ada.page.textContent('#customize-issues-badges')).includes('Stale issues') &&
@@ -533,8 +597,9 @@ try {
   }
 
   // A swapped extension's open page loses its stream once and reconnects
-  // (standup swaps its files, triage its settings): not an error.
-  const errors = people.flatMap(person => person.errors).filter(error => !error.includes('/_hyper/standup/') && !error.includes('/_hyper/triage/'))
+  // (standup and activity swap their files, triage its settings): not an
+  // error. The island probe's blocked fetch is the sandbox working.
+  const errors = people.flatMap(person => person.errors).filter(error => !error.includes('/_hyper/standup/') && !error.includes('/_hyper/triage/') && !error.includes('/_hyper/activity/') && !(error.includes('Content Security Policy') && error.includes('/team/ENG')))
   check('no errors in the browser console', errors.length === 0, errors.slice(0, 3).join(' | '))
 } finally {
   await browser.close()
@@ -545,6 +610,7 @@ try {
   }
   writeFileSync(pageFile, original)
   if (readFileSync(entryFile, 'utf8') !== originalEntry) writeFileSync(entryFile, originalEntry)
+  if (readFileSync(calendarFile, 'utf8') !== originalCalendar) writeFileSync(calendarFile, originalCalendar)
   rmSync(parked, { recursive: true, force: true })
 }
 

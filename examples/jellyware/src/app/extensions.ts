@@ -7,6 +7,7 @@ import {
   type Badge,
   Contributions,
   type ExtensionData,
+  type ExtensionIslands,
   type ExtensionSettings,
   NavEntry,
   type Provided,
@@ -42,8 +43,8 @@ export type Host = Provided<typeof requires>
  *  settings (declared in extension.json) come as `ExtensionSettings`, its
  *  own database (tables from its migrations) as `ExtensionData`. */
 export const extension = <E>(
-  layer: Layer.Layer<never, E, Host | ExtensionSettings | ExtensionData>,
-): Layer.Layer<never, E, Host | ExtensionSettings | ExtensionData> => layer
+  layer: Layer.Layer<never, E, Host | ExtensionSettings | ExtensionData | ExtensionIslands>,
+): Layer.Layer<never, E, Host | ExtensionSettings | ExtensionData | ExtensionIslands> => layer
 
 // SLOTS AND COMMANDS
 
@@ -194,6 +195,15 @@ export const CUSTOMIZATIONS: ReadonlyArray<Customization> = [
     slot: null,
     how: "Render `map({ id, label, places, selectedId?, center?, zoom?, height?, onClickPlace?, onPick? }, h)` from `#app/widgets/map` in a page's view: a place is `{ id, longitude, latitude, title, details?, badge?, tone? }` (its tooltip shows the title and details). It runs in the browser (an island the app ships, MapLibre with OpenFreeMap tiles) and fits every place unless given a center. `onClickPlace` and `onPick` turn clicks into Messages; check them in update. Coordinates the app does not have go into the extension's own table. `team-map/` is the reference.",
     example: 'Add a map of the customers we support, kept in a table of the extension, with the number of open issues per customer on each marker.',
+  },
+  {
+    id: 'islands',
+    title: 'Browser code of its own',
+    where: 'Anything the charts and maps do not cover (a calendar, a canvas, a drag and drop board), in a frame on an extension page.',
+    seeAt: '/activity',
+    slot: null,
+    how: "Declare `\"islands\": { \"<name>\": \"<name>.island.ts\" }` in extension.json. The island is a Foldkit program like the app's widgets: a contract `defineIsland({ name, Props, Event })` (from `@hyper-effect/jellyware/island`), a program with `ports: islandPorts(Contract)`, and an entry `<name>.island.ts` that calls `runIsland(Contract, (container, props) => Runtime.makeElement({ ..., ports, container }))`. The app bundles it for each version and runs it in a sandboxed frame without network, cookies or access to the page: the page sends it props, it sends back events. On the page: `const src = yield* (yield* ExtensionIslands).src('<name>')` while building, then `islandView(Contract, { id, src, label, props, onEvent }, h)` in the view; check its events in update. Keep the program in its own module so tests can import it (the entry starts it). `activity/` is the reference.",
+    example: 'Add a page with a board of the open issues as cards that I can drag between the columns Now, Next and Later; the order is kept in a table of the extension.',
   },
 ]
 

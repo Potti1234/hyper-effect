@@ -64,6 +64,8 @@ const Loaded = Jellyware.layer({
   watch: process.env['JELLYWARE_WATCH'] !== '0',
   // Each extension's own database (tables from its migrations).
   dataDirectory,
+  // Path aliases for extensions' islands (their browser code).
+  islandTsconfig: join(appDirectory, 'tsconfig.json'),
   // Encrypts secret settings at rest.
   secretKey: Redacted.make(Hyper.secretFromEnvironment('JELLYWARE_SECRETS_KEY', 'dev-secrets-key, set JELLYWARE_SECRETS_KEY')),
   // Every extension in a process of its own, reaching the app through
@@ -142,6 +144,10 @@ const Routes = Layer.mergeAll(
   ),
   // The islands bundle (npm run build:islands): charts and maps in the browser.
   HttpStaticServer.layer({ root: publicFile('assets'), prefix: '/assets' }),
+  // Extensions' own islands, each in a sandboxed frame without network.
+  Layer.unwrap(
+    Effect.map(Jellyware.Extensions, extensions => Jellyware.frameRoute({ codeOf: extensions.islandCode, stylesheets: ['/styles.css'] })),
+  ),
 ).pipe(Layer.provideMerge(Changes), Layer.provideMerge(Host))
 
 HttpRouter.serve(Routes).pipe(

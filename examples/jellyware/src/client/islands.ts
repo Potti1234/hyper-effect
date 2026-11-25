@@ -1,7 +1,9 @@
 /* Browser entry of the islands bundle (built by Vite into public/assets):
    the app's widgets, which any page renders with `chart` and `map` from
-   src/app/widgets. */
+   src/app/widgets, and the host of extensions' own islands (their browser
+   code runs in a sandboxed frame, not here). */
 import { register } from '@hyper-effect/island/client'
+import { registerIslandHost } from '@hyper-effect/jellyware/island-host'
 
 import { Chart } from '#app/widgets/chart-contract'
 import { makeChart } from '#app/widgets/chart.client'
@@ -10,3 +12,5 @@ import { makeMap } from '#app/widgets/map.client'
 
 register(Chart, makeChart)
 register(PlaceMap, makeMap)
+// Extensions' own islands, each in a sandboxed frame.
+registerIslandHost()
