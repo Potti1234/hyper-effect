@@ -42,6 +42,7 @@ export {
   type SlotEntry,
   SlotItem,
 } from './contributions.ts'
+export { DataError, DataSummary, ExtensionData, type Row, type SqlValue, migrationsCheck } from './data.ts'
 export { DiffLine, FileDiff, diffFolders, diffLines } from './diff.ts'
 export {
   DEFAULT_GLOBALS,

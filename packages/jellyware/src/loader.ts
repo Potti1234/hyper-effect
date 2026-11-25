@@ -26,6 +26,7 @@ import { hashFolder, listFolders } from './files.ts'
 import { PageOwner } from '@hyper-effect/core'
 
 import { CurrentExtension } from './contributions.ts'
+import { DataError, type Database, DataSummary, ExtensionData, applyMigrations, makeData, openDatabase, summarize } from './data.ts'
 import * as Graft from './graft.ts'
 import { type IsolationOptions, isolatedExtension } from './isolation/parent.ts'
 import { decrypt, encrypt, isStoredSecret, maskSecret } from './secrets.ts'
@@ -84,6 +85,8 @@ export const Manifest = S.Struct({
   description: S.optional(S.String),
   /** What an administrator can change while the app runs. */
   settings: S.optional(S.Record(S.String, SettingSpec)),
+  /** The SQL statements that make its tables, append-only (data.ts). */
+  migrations: S.optional(S.Array(S.String)),
 })
 export type Manifest = typeof Manifest.Type
 
@@ -100,6 +103,8 @@ export const ExtensionStatus = S.Struct({
   description: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
   /** Whether it runs in a process of its own. */
   isolated: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(false))),
+  /** Its database's tables, when it has any. */
+  data: S.NullOr(DataSummary).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
   error: S.NullOr(S.String),
   /** The declared settings with the values in effect. */
   settings: S.Array(SettingField),
@@ -205,6 +210,9 @@ export type Options<Requires extends ReadonlyArray<Graft.Requirement>> = Readonl
   /** Runs every extension in a process of its own (isolation/parent.ts);
    *  without it, extensions run in this process. */
   isolation?: IsolationOptions
+  /** Where each extension's database is kept (data.ts); without it,
+   *  extensions with migrations do not load. */
+  dataDirectory?: string
 }>
 
 /** The member settings of one extension as one member has them: `fields`
@@ -246,7 +254,34 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
        *  settings. */
       const isExtensionLayer = (
         value: unknown,
-      ): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires> | ExtensionSettings | Graft.Mounting> => Layer.isLayer(value)
+      ): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires> | ExtensionSettings | ExtensionData | Graft.Mounting> =>
+        Layer.isLayer(value)
+
+      // Each extension's database, open for the life of the loader.
+      const databases = new Map<string, Database>()
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          for (const database of databases.values()) database.db.close()
+          databases.clear()
+        }),
+      )
+      /** An extension's database, when it declares migrations or has one. */
+      const databaseOf = (id: string, wanted: boolean) =>
+        Effect.gen(function* () {
+          const open = databases.get(id)
+          if (open !== undefined) return open
+          if (options.dataDirectory === undefined) return null
+          if (!wanted && !(yield* exists(join(options.dataDirectory, `${id}.sqlite`)))) return null
+          const database = yield* openDatabase(options.dataDirectory, id)
+          databases.set(id, database)
+          return database
+        })
+      const noTables = 'This extension has no tables: declare them as migrations in extension.json.'
+      const noData = ExtensionData.of({
+        query: () => Effect.fail(new DataError({ message: noTables })),
+        run: () => Effect.fail(new DataError({ message: noTables })),
+        changes: Stream.make(0),
+      })
 
       const decodeValues = S.decodeUnknownEffect(S.fromJsonString(Values))
       const readValues = (id: string) =>
@@ -347,12 +382,23 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           const specs = manifest.settings ?? {}
           const values = effectiveValues(specs, yield* readValues(id))
           yield* ensureMemberValues(id)
+          // Its database: new migrations first; one that is changed or fails
+          // stops the load.
+          const migrations = manifest.migrations ?? []
+          const database = yield* databaseOf(id, migrations.length > 0)
+          if (migrations.length > 0 && database === null) {
+            return yield* new LoadError({ message: 'It declares migrations, but this app keeps no data for extensions.' })
+          }
+          const migrationProblem = database === null || migrations.length === 0 ? null : applyMigrations(database.db, migrations)
+          if (migrationProblem !== null) return yield* new LoadError({ message: `extension.json: ${migrationProblem}` })
+          const data = database === null ? null : summarize(database.db)
           const base = {
             id,
             name: manifest.name,
             version: manifest.version,
             description: manifest.description ?? null,
             isolated: options.isolation !== undefined,
+            data: data !== null && (data.migrations > 0 || data.tables.length > 0) ? data : null,
             settings: fieldsOf(specs, values),
           }
           const runningNow = () => running.get(id)?.generation ?? null
@@ -405,6 +451,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
             Layer.provide(
               Layer.mergeAll(
                 Layer.succeed(ExtensionSettings, makeSettings(plain, secrets, forMember)),
+                Layer.succeed(ExtensionData, database === null ? noData : makeData(database)),
                 Layer.succeed(CurrentExtension, id),
                 Layer.succeed(PageOwner, id),
               ),
@@ -455,6 +502,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
                 version: known?.version ?? '',
                 description: known?.description ?? null,
                 isolated: options.isolation !== undefined,
+                data: known?.data ?? null,
                 state: 'failed',
                 running: running.get(id)?.generation ?? null,
                 error: error.message,

@@ -22,6 +22,7 @@ export {
   type SlotEntry,
   SlotItem,
 } from './contributions.ts'
+export { DataError, ExtensionData, type Row, type SqlValue } from './data.ts'
 export { ExtensionSettings, SettingField, SettingSpec, type SettingValue, type SettingValues, isMemberSetting } from './settings.ts'
 export type { Provided, Requirement } from './graft.ts'
 export { type MemberKind, type RemoteService, remoteService } from './isolation/remote.ts'

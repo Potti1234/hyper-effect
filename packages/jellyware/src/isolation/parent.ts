@@ -14,6 +14,7 @@ import { PageHost, type PageRoute, StylesheetChanges } from '@hyper-effect/core'
 
 import { Badge, Contributions, NavEntry, SlotContent } from '../contributions.ts'
 import { background } from '../graft.ts'
+import { ExtensionData, SqlValueSchema } from '../data.ts'
 import { ExtensionSettings, type SettingValue } from '../settings.ts'
 import { type Handler, type Peer, decodeOrDie, make } from './bridge.ts'
 import type { RemoteService } from './remote.ts'
@@ -214,7 +215,8 @@ export const isolatedExtension = (
     Effect.gen(function* () {
       const { id, options } = input
       // Everything the extension may reach, looked up by key below.
-      const context = yield* Effect.context<PageHost | Contributions | KeyValueStore.KeyValueStore | ExtensionSettings>()
+      const context = yield* Effect.context<PageHost | Contributions | KeyValueStore.KeyValueStore | ExtensionSettings | ExtensionData>()
+      const data = Context.get(context, ExtensionData)
       const pageHost = Context.get(context, PageHost)
       const contributions = Context.get(context, Contributions)
       const settings = Context.get(context, ExtensionSettings)
@@ -316,6 +318,17 @@ export const isolatedExtension = (
       serve('kv.clear', { kind: 'call', run: () => Effect.flatMap(store.keys, keys => Effect.forEach(keys, key => store.remove(key), { discard: true })) })
 
       serve('styles', { kind: 'stream', open: () => styles })
+      // Its database, kept here.
+      const Params = S.Array(SqlValueSchema)
+      serve('data.query', {
+        kind: 'call',
+        run: ([sql, params]) => Effect.flatMap(decodeOrDie(Params)(params ?? []), decoded => data.query(String(sql), decoded)),
+      })
+      serve('data.run', {
+        kind: 'call',
+        run: ([sql, params]) => Effect.flatMap(decodeOrDie(Params)(params ?? []), decoded => data.run(String(sql), decoded)),
+      })
+      serve('data.changes', { kind: 'stream', open: () => data.changes })
       serve('settings.forMember', {
         kind: 'stream',
         open: ([memberId]) => settings.forMember(String(memberId)).pipe(Stream.map(values => values.values)),

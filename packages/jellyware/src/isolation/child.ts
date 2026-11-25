@@ -5,6 +5,7 @@ import { KeyValueStore } from 'effect/persistence'
 import { PageHost, StylesheetChanges, servedPage } from '@hyper-effect/core'
 
 import { type BadgeEntry, type CommandEntry, Contributions, Inventory, NavEntry, SlotBadge, SlotCard, type SlotEntry } from '../contributions.ts'
+import { DataError, ExtensionData, SqlValueSchema } from '../data.ts'
 import { ExtensionSettings, type SettingValues, valuesOf } from '../settings.ts'
 import { type Handler, type Peer, decodeOrDie, make } from './bridge.ts'
 import type { RemoteService } from './remote.ts'
@@ -45,6 +46,9 @@ const SlotContext = S.Record(S.String, S.String)
 const CommandInput = S.Struct({ args: S.Json, memberId: S.String })
 const Values = S.Record(S.String, S.Union([S.String, S.Number, S.Boolean]))
 const HostedPage = S.Struct({ name: S.String, paths: S.Array(S.String), owner: S.NullOr(S.String) })
+const Rows = S.Array(S.Record(S.String, SqlValueSchema))
+const dataError = (error: unknown) =>
+  new DataError({ message: typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error) })
 
 const isClosedLayer = (value: unknown): value is Layer.Layer<unknown, unknown, never> => Layer.isLayer(value)
 
@@ -244,6 +248,15 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
                 keys: Effect.orDie(peer.call('kv.keys')).pipe(
                   Effect.map(keys => (Array.isArray(keys) ? keys.filter((key): key is string => typeof key === 'string') : [])),
                 ),
+              }),
+            ),
+            Context.add(
+              ExtensionData,
+              ExtensionData.of({
+                query: (sql, params = []) =>
+                  peer.call('data.query', [sql, params]).pipe(Effect.mapError(dataError), Effect.flatMap(decodeOrDie(Rows))),
+                run: (sql, params = []) => peer.call('data.run', [sql, params]).pipe(Effect.mapError(dataError), Effect.map(Number)),
+                changes: peer.stream('data.changes').pipe(Stream.orDie, Stream.map(Number)),
               }),
             ),
             Context.add(StylesheetChanges, peer.stream('styles').pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(S.String))))),
