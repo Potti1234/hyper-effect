@@ -949,7 +949,7 @@ const extensionRow = (extension: ExtensionStatus, model: Model, h: HtmlBuilder<M
         [h.Class('flex items-center gap-2 text-[13px]')],
         [
           h.span([h.Class('font-medium')], [extension.name]),
-          h.span([h.Class('text-muted-foreground')], [`${extension.id} · version ${extension.version}`]),
+          h.span([h.Class('text-muted-foreground')], [`${extension.id} · version ${extension.version}${extension.isolated ? ' · own process' : ''}`]),
           h.span([h.Class('flex-1')], []),
           badge(
             h,

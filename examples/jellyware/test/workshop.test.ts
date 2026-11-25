@@ -50,6 +50,7 @@ const standup: ExtensionStatus = {
   name: 'Stand-up',
   version: '1',
   description: null,
+  isolated: false,
   state: 'active',
   running: 1,
   error: null,
@@ -61,6 +62,7 @@ const related: ExtensionStatus = {
   name: 'Related issues',
   version: '2',
   description: null,
+  isolated: false,
   state: 'active',
   running: 1,
   error: null,
@@ -308,6 +310,7 @@ describe('workshop: the page over HTTP', () => {
     PageHost,
     PageHost.of({
       mount: () => Effect.void,
+      mountRoutes: () => Effect.void,
       names: Effect.succeed(['standup']),
       pages: Effect.succeed([{ name: 'standup', paths: ['/standup'], owner: 'standup' }]),
     }),

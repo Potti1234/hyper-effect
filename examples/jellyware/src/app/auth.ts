@@ -10,13 +10,21 @@ import { PageRedirect, type PageRequest, type RequestContext, secretFromEnvironm
    - Flags read it (`requireUser`), so a signed-out visit goes to /login;
    - `principal` binds every session to it, so signing out ends the page.
    A real app verifies its own session or token here instead; keep the same
-   three exports. */
+   three exports.
+
+   In an extension's own process (JELLYWARE_ISOLATED=1) there is no secret
+   to check a cookie with: the server has checked it and says who it is in
+   the header `x-jellyware-principal`, which it sets on every request it
+   forwards (a browser's own value is dropped). */
 
 const USER_COOKIE = 'linear-clone-user'
-const SECRET = secretFromEnvironment('APP_SECRET', 'dev-secret, set APP_SECRET')
 const MAX_AGE = 60 * 60 * 12
+const ISOLATED = process.env['JELLYWARE_ISOLATED'] === '1'
 
-const signature = (name: string) => createHmac('sha256', SECRET).update(name).digest()
+// Read when first needed: an extension's process never reads it.
+let secret: string | undefined
+const signature = (name: string) =>
+  createHmac('sha256', (secret ??= secretFromEnvironment('APP_SECRET', 'dev-secret, set APP_SECRET'))).update(name).digest()
 
 /** The cookie value for a signed-in user (exported for tests). */
 export const cookieValue = (name: string) =>
@@ -32,12 +40,21 @@ export const signedInUser = (cookies: RequestContext['cookies']): string | undef
   return actual.length === expected.length && timingSafeEqual(actual, expected) ? name : undefined
 }
 
+/** The signed-in user of a request: from the cookie, or in an extension's
+ *  own process from the server's header. */
+const userOf = ({ cookies, headers }: Pick<RequestContext, 'cookies' | 'headers'>): string | undefined => {
+  if (!ISOLATED) return signedInUser(cookies)
+  const header = headers['x-jellyware-principal']
+  return typeof header === 'string' && header !== '' ? header : undefined
+}
+
 /** For `Hyper.layer`: sessions belong to the signed-in user. */
-export const principal = ({ cookies }: RequestContext) => Effect.succeed(signedInUser(cookies))
+export const principal = (context: RequestContext) => Effect.succeed(userOf(context))
 
 /** For Flags: the signed-in user, or a redirect to /login and back. */
-export const requireUser = ({ cookies, url }: PageRequest) => {
-  const user = signedInUser(cookies)
+export const requireUser = (request: PageRequest) => {
+  const { url } = request
+  const user = userOf(request)
   return user === undefined
     ? Effect.fail(new PageRedirect({ location: `/login?next=${encodeURIComponent(url.pathname + url.search)}` }))
     : Effect.succeed(user)

@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint'
    tsc (npm run typecheck); these are the rules tsc does not cover. */
 export default tseslint.config(
   // src/ui holds creaseui registry copies, linted in creaseui itself.
-  { ignores: ['**/node_modules/**', '**/dist/**', '**/public/**', '**/src/ui/**', 'output/**'] },
+  { ignores: ['**/node_modules/**', '**/dist/**', '**/public/**', '**/src/ui/**', 'output/**', '**/.jellyware/**'] },
   {
     files: ['packages/*/src/**/*.ts', 'packages/*/test/**/*.ts', 'apps/*/src/**/*.ts', 'apps/*/test/**/*.ts', 'examples/*/src/**/*.ts', 'examples/*/test/**/*.ts'],
     extends: [tseslint.configs.recommended],

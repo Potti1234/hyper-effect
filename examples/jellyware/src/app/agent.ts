@@ -12,6 +12,7 @@ import { type Agent, AgentError, type Check, type Task, isTestFile } from '@hype
 
 import type { Guard } from '../pi-guard.ts'
 import { importRules } from './extension-rules.ts'
+import { remoteServices } from './remote.ts'
 
 /* The agent that changes this app's extensions, and the checks its work
    must pass besides the import rules: the typecheck, and the extensions' own
@@ -110,6 +111,13 @@ const runNode = (args: ReadonlyArray<string>, options: Readonly<{ cwd: string; e
     return Effect.sync(() => child.kill())
   })
 
+/** What an extension in its own process may use of the app's services,
+ *  as a sentence for the agent (src/app/remote.ts). */
+const sharedMembers = () =>
+  remoteServices
+    .map(service => `\`${service.key.key.replace(/^.*\//, '')}\` (${Object.keys(service.members).join(', ')})`)
+    .join('; ')
+
 /** The import rules as a sentence for the agent. */
 const allowedImports = () =>
   [
@@ -137,7 +145,7 @@ You change the extensions of a running hyper-effect app, a clone of Linear's iss
 - An extension is \`<id>/extension.json\` ({ "id": "<id>", "name", "version", "entry" }) and an entry module whose default export is \`extension(Layer...)\` from \`#app/extensions\`. Import the app as \`#app/...\`.
 - To add to the app's own pages instead of a page of its own, use a slot: cards under an issue's properties (\`issueSidebar\`), entries in the issue lists' command palette (\`issuesPalette\`), badges on issue rows and board cards (\`issueBadges\`); the guide below says where each shows and what its content gets. Buttons are \`action(label, command, args)\`; register each command with \`Contributions.command({ id, run: ({ args, memberId }) => ... })\` and decode \`args\` and check what the member may do in \`run\`. A command only administrators should run names \`roles: ['admin']\`; the app then checks the role and hides the button from members. \`related/\` (card and palette), \`standup/\` (palette link) and \`stale/\` (badges) are references.
 - Values people should be able to change without a prompt go into \`settings\` in extension.json (per key: "type" string, number (with "min"/"max"), boolean or select (with "options"), a "label" and a "default"); read them while building with \`const settings = yield* ExtensionSettings\` from \`@hyper-effect/jellyware\` (\`settings.number('max')\`, \`settings.string\`, \`settings.boolean\`). \`related/\` declares three. A key for another service is a setting with \"type\": \"secret\" (no default): read it with \`settings.secret(key)\` (a \`Redacted\`; \`Redacted.value\` only where it is used, \`settings.hasSecret(key)\` to test) and never put it in content, pages or logs. A value each member should choose for themselves gets \"scope\": \"member\": read it per member with \`settings.forMember(memberId)\` (a stream of values; \`related/\` does this for \`max\`).
-- Extensions run inside the app's server, so a check refuses code that reaches beyond the app's services. Import only: ${allowedImports()}. Type-only imports (\`import type\`) of anything are fine. Do not use \`process\`, \`globalThis\`, \`require\`, \`eval\`, \`Function\`, \`fetch\`, \`WebSocket\`, \`import.meta\`, a computed \`import()\`, or Effect's \`Config\`/\`ConfigProvider\`.
+- Each extension runs in a process of its own that can read only its own bundled code, with no network and none of the server's environment; it reaches the app only through the services it is given. Of the app's own services it may use only these members: ${sharedMembers()}. A check also refuses code that reaches beyond the app's services. Import only: ${allowedImports()}. Type-only imports (\`import type\`) of anything are fine. Do not use \`process\`, \`globalThis\`, \`require\`, \`eval\`, \`Function\`, \`fetch\`, \`WebSocket\`, \`import.meta\`, a computed \`import()\`, or Effect's \`Config\`/\`ConfigProvider\`.
 - Page \`name\`s and paths, command ids, sidebar entry ids and card ids must be new: the guide below lists every one in use, and which extension owns it.
 - Use Tailwind classes the app already uses where you can.
 - Test what you build, in \`<id>/*.test.ts\` next to the code: a page's update with Foldkit's \`Story\` and its view with \`Scene\` (\`foldkit/test\`), pure functions (what a card or a badge shows) with plain assertions; data from \`#app/seed\`. Tests import from \`@effect/vitest\`. The app runs the tests of every extension you change and sends you the failures; they must pass. \`standup/page.test.ts\`, \`stale/extension.test.ts\` and \`related/extension.test.ts\` are references.
