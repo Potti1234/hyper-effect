@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { Effect, Schema as S } from 'effect'
+import { Effect, Schema as S, Semaphore } from 'effect'
 
 import { type Agent, AgentError, type Check, type Task, isTestFile } from '@hyper-effect/jellyware'
 
@@ -158,13 +158,35 @@ const guardModule = fileURLToPath(new URL('../pi-guard.ts', import.meta.url))
 /** Folders and files pi never reads under the repository. */
 const HIDDEN = ['.jellyware', '.git', '.hyper-sessions*', '.env*']
 
+/** pi's credentials while at least one pi runs: written when the first
+ *  starts, deleted when the last stops (runs may work side by side). */
+const sharedCredentials = (agentDirectory: string) => {
+  let users = 0
+  const lock = Semaphore.makeUnsafe(1)
+  const acquire = lock.withPermits(1)(
+    Effect.gen(function* () {
+      if (users === 0) yield* writeCredentials(agentDirectory)
+      users += 1
+    }),
+  )
+  const release = lock.withPermits(1)(
+    Effect.gen(function* () {
+      users -= 1
+      if (users === 0) yield* Effect.promise(() => rm(credentialsFile(agentDirectory), { force: true }))
+    }),
+  )
+  return { acquire, release }
+}
+type Credentials = ReturnType<typeof sharedCredentials>
+
 export const piAgent = (options: PiOptions): Agent => {
   // Credentials left by a server that stopped while pi worked.
   rmSync(credentialsFile(options.agentDirectory), { force: true })
-  return { work: task => work(options, task) }
+  const credentials = sharedCredentials(options.agentDirectory)
+  return { work: task => work(options, credentials, task) }
 }
 
-const work = (options: PiOptions, { prompt, stage, runDirectory, feedback, guide }: Task) =>
+const work = (options: PiOptions, credentials: Credentials, { prompt, stage, runDirectory, feedback, guide }: Task) =>
   Effect.gen(function* () {
     // The rules, then what the app has now (made by the app at the run's start).
     const instructionsFile = join(runDirectory, 'instructions.md')
@@ -203,19 +225,25 @@ const work = (options: PiOptions, { prompt, stage, runDirectory, feedback, guide
       Effect.map(output => output.trim()),
       Effect.mapError(output => fail(`pi stopped: ${output}`)),
     )
-    // The token exists only while pi runs.
-    return yield* Effect.acquireUseRelease(
-      writeCredentials(options.agentDirectory),
-      () => pi,
-      () => Effect.promise(() => rm(credentialsFile(options.agentDirectory), { force: true })),
-    )
+    // The token exists only while a pi runs.
+    return yield* Effect.acquireUseRelease(credentials.acquire, () => pi, () => credentials.release)
   })
 
 /** Typechecks the changed extensions of a snapshot against the app,
  *  incrementally (the first run takes a minute or two). */
+/** Typechecks take turns: they share one incremental build file. */
+const typecheckTurns = Semaphore.makeUnsafe(1)
+
 export const typecheck = (appDirectory: string, workDirectory: string): Check => ({
   name: 'Typecheck',
-  run: ({ snapshot, runDirectory, changed }) =>
+  run: input => typecheckTurns.withPermits(1)(typecheckOnce(appDirectory, workDirectory, input)),
+})
+
+const typecheckOnce = (
+  appDirectory: string,
+  workDirectory: string,
+  { snapshot, runDirectory, changed }: Readonly<{ snapshot: string; runDirectory: string; changed: ReadonlyArray<string> }>,
+) =>
     Effect.gen(function* () {
       const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc')
       const config = join(runDirectory, 'tsconfig.json')
@@ -239,8 +267,7 @@ export const typecheck = (appDirectory: string, workDirectory: string): Check =>
           return prefixes.reduce((text, prefix) => text.split(prefix).join(''), output).slice(0, 6000)
         }),
       )
-    }),
-})
+  })
 
 /** Environment variables the tests get: what Node and the test runner
  *  need, none of the server's secrets. */

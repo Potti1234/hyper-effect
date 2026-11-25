@@ -78,6 +78,8 @@ const Changes = Jellyware.changesLayer({
   checks: [Jellyware.importCheck(importRules), Agent.typecheck(appDirectory, workDirectory), Agent.extensionTests(appDirectory)],
   protectedDirectories: [join(appDirectory, 'src')],
   review: true,
+  // Up to three runs work at a time; a long one does not hold up the rest.
+  concurrency: 3,
   // The agent's answer ends with `Changed: <ids>`, compared with the files.
   declaredChanges: true,
   // What the app has now, for the agent: pages, slots, commands, settings.
