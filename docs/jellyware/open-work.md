@@ -59,11 +59,13 @@ An extension that loops without yielding, allocates without bound, or calls `pro
 
 - **Removes it:** the child process of the first risk, with a watchdog (Powermove kills sandboxed extensions that stop answering for 8 seconds).
 
-### Events during a swap
+### Events during a swap (fixed 2026-11-25)
 
-While the new version of an extension is mounted and the old one not yet closed, an event goes to the new version, which restores the session from its snapshot; the old version's final snapshot can then overwrite the newer one. The window is the time between the two steps of a swap, usually milliseconds.
+While the new version of an extension was mounted and the old one not yet closed, an event could reach the new version, which restored the session from its snapshot; the old version's final snapshot then overwrote the newer one.
 
-- **Removes it:** let the page host hand a session over: the old version writes its final snapshot first, then requests for the session go to the new version.
+Since 2026-11-25 the page host hands sessions over (`packages/core/src/page-host.ts`). When another version takes over a page's requests (a newer one is mounted, or the newer one closes and reveals the older), requests wait for a moment, those already running finish, the version that stops serving closes its live sessions with their final snapshots (`drain`, returned by `servedPage` in `server.ts`), and only then is the new router installed. A new router that does not fit (a path collision) is refused before anything is drained. A test posts an event to the new version while the old one is still mounted, then closes the old one: the snapshot keeps the new state (it failed before the change).
+
+- **What is left:** an event stream that was answered by the old version just before the hand-over started can reach it once more; the window is the time between checking the gate and reading the router, microseconds. Requests wait while the old version writes its snapshots, a few milliseconds per open session.
 
 ### Old versions stay in memory
 
@@ -174,9 +176,17 @@ A typecheck does not show a page that renders the wrong thing, and an agent can 
 
 - **Seen so far:** asked for "a blue badge 'Unassigned' on open issues nobody is assigned to", pi wrote the extension and a test for every status with and without an assignee, named it in its `Changed:` line, and passed every check in one attempt, in 68 seconds. The browser check runs a scripted change that breaks `stale`'s test; the run fails after three attempts with the failing assertion.
 
+## Runs side by side (built 2026-11-25)
+
+A run used to wait for every run before it, so one long run held up the rest. `Changes` takes `concurrency` (default 1; the example uses 3): that many runs work at once, started in the order they came; the rest wait in "Queued". Each run has its own stage and snapshot, installs take turns, and a run whose extensions changed since it started is refused at install ("shared changed since this run started"), so two runs on the same extension never both go live unnoticed. A test runs two at once, queues a third, and checks that the second of two changes to one extension is refused.
+
+What several runs share had to cope: pi's credentials file now exists while at least one pi runs (written by the first, deleted by the last), and the typechecks take turns, as they share one incremental build file. The extensions' tests run side by side.
+
+- **What is left:** a refused run must be run again by hand; it could instead start again from the new live files.
+
 ## The list
 
-Everything left, by size. Items 1 to 8 were done on 2026-11-24 and item 9 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 and 10 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
 
 ### Done
 
@@ -191,12 +201,7 @@ Everything left, by size. Items 1 to 8 were done on 2026-11-24 and item 9 on 202
 | 7 | **More slots.** Actions on the selected row and entries in the command palette, badges on list rows and board cards, and a list on `/extensions` of everything that can be customized. | Done: [slots and what can be customized](#slots-and-what-can-be-customized-built-2026-11-24) |
 | 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | Done: [better checks](#better-checks-built-2026-11-24) |
 | 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per member. Per workspace not built (one workspace). | Done: [secret and member settings](#secret-and-member-settings-built-2026-11-25) |
-
-### Medium
-
-| # | Work | Why | Where it was described |
-|---|---|---|---|
-| 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs queue or run side by side instead of one at a time. | [Events during a swap](#events-during-a-swap); a long run blocks the next | `packages/jellyware/src/changes.ts` |
+| 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs work side by side (three in the example) instead of one at a time. | Done: [events during a swap](#events-during-a-swap-fixed-2026-11-25), [runs side by side](#runs-side-by-side-built-2026-11-25) |
 
 ### Large
 
