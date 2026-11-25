@@ -118,7 +118,8 @@ export class Changes extends Context.Service<
     /** The runs, newest first, now and after every change. */
     readonly changes: Stream.Stream<ReadonlyArray<Run>>
     readonly current: Effect.Effect<ReadonlyArray<Run>>
-    /** Queues a run; runs go one at a time. Answers with its id. */
+    /** Queues a run; up to `concurrency` work at a time. Answers with its
+     *  id. */
     readonly start: (prompt: string, author: string) => Effect.Effect<string>
     readonly undo: (runId: string) => Effect.Effect<void, UndoRefused>
     /** Installs a run waiting for review. The run then is `installed`, or
@@ -144,6 +145,9 @@ export type Options<R = never> = Readonly<{
   protectedDirectories?: ReadonlyArray<string>
   /** How often the agent may work on one run, retries included. Default 3. */
   attempts?: number
+  /** How many runs may work at a time; more wait in `queued`. Default 1.
+   *  The agent and the checks must then cope with several runs at once. */
+  concurrency?: number
   /** Whether a checked run waits for a person to approve it. Default
    *  false: it installs at once. */
   review?: boolean
@@ -481,9 +485,17 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           return run
         })
 
-      // One run at a time, in the order they were started.
+      // Up to `concurrency` runs at a time, started in the order they came.
+      // Each works on its own stage; installs take turns (installLock), and
+      // a run whose extensions changed since it started is refused.
       const queue = yield* Queue.unbounded<Run>()
-      yield* Queue.take(queue).pipe(Effect.flatMap(execute), Effect.forever, Effect.forkScoped)
+      const slots = yield* Semaphore.make(Math.max(1, options.concurrency ?? 1))
+      const runScope = yield* Effect.scope
+      yield* Effect.gen(function* () {
+        yield* slots.take(1)
+        const next = yield* Queue.take(queue)
+        yield* execute(next).pipe(Effect.ensuring(slots.release(1)), Effect.forkIn(runScope))
+      }).pipe(Effect.forever, Effect.forkScoped)
 
       return Changes.of({
         changes: SubscriptionRef.changes(runs),
