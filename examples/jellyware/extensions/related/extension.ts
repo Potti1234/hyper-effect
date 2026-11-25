@@ -12,8 +12,9 @@ import { Workspace } from '#app/store'
    command `related.mark-urgent`. The same action is in the issue lists'
    command palette for the selected issue (slot `issues.palette`).
 
-   Settings (extension.json): the card's title, how many issues it shows,
-   and whether it offers "Mark urgent". It refuses to show more than 10: a
+   Settings (extension.json): the card's title, how many issues it shows
+   (a member setting: the value here is the default, each member may choose
+   their own), and whether it offers "Mark urgent". It refuses to show more than 10: a
    value the declaration allows (up to 20) but this version fails with, so
    the workshop's "put back when it fails" can be tried. */
 
@@ -55,9 +56,10 @@ export default extension(
         return yield* Effect.fail(`Related shows at most ${LIMIT} issues; the setting asks for ${options.max}.`)
       }
 
-      yield* issueSidebar('related', ({ issueId }) =>
-        workspace.changes.pipe(
-          Stream.map(state => cardFor(issueId, state.issues, options)),
+      // `max` is a member setting: each member's own number, up to the limit.
+      yield* issueSidebar('related', ({ issueId, memberId }) =>
+        Stream.zipLatest(workspace.changes, settings.forMember(memberId)).pipe(
+          Stream.map(([state, mine]) => cardFor(issueId, state.issues, { ...options, max: Math.min(mine.number('max'), LIMIT) })),
           Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
         ),
       )

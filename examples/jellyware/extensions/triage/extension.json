@@ -2,5 +2,13 @@
   "id": "triage",
   "name": "Triage",
   "version": "1",
-  "entry": "extension.ts"
+  "entry": "extension.ts",
+  "description": "A page of unassigned issues in Backlog and Todo, newest first, to take one by one.",
+  "settings": {
+    "inboxToken": {
+      "type": "secret",
+      "label": "Support inbox token",
+      "description": "For a later import of support requests. Stored encrypted; the page only says whether it is set."
+    }
+  }
 }

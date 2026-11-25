@@ -8,6 +8,7 @@ import {
   Changes,
   Contributions,
   CurrentExtension,
+  type MemberSettings,
   type ExtensionStatus,
   Extensions,
   type FileDiff,
@@ -64,9 +65,17 @@ const related: ExtensionStatus = {
   running: 1,
   error: null,
   settings: [
-    { key: 'max', spec: { type: 'number', label: 'Issues shown', default: 5, min: 1, max: 20 }, value: 5 },
-    { key: 'urgentAction', spec: { type: 'boolean', label: 'Offer Mark urgent', default: true }, value: true },
+    { key: 'max', spec: { type: 'number', label: 'Issues shown', default: 5, min: 1, max: 20, scope: 'member' }, value: 5, isSet: true },
+    { key: 'urgentAction', spec: { type: 'boolean', label: 'Offer Mark urgent', default: true }, value: true, isSet: true },
+    { key: 'token', spec: { type: 'secret', label: 'Token' }, value: '', isSet: true },
   ],
+}
+
+const relatedMine: MemberSettings = {
+  extension: 'related',
+  name: 'Related issues',
+  fields: [{ key: 'max', spec: { type: 'number', label: 'Issues shown', default: 5, min: 1, max: 20, scope: 'member' }, value: 3, isSet: true }],
+  own: ['max'],
 }
 
 const change = (id: string, state: SettingsChange['state']): SettingsChange => ({
@@ -89,6 +98,7 @@ const model = (runs: ReadonlyArray<Run> = [], settingsChanges: ReadonlyArray<Set
     members: SEED_MEMBERS,
     inventory: { nav: [], slots: [], badges: [], commands: [] },
     pages: [],
+    mySettings: [relatedMine],
   }).model
 
 const fileDiff: FileDiff = {
@@ -214,6 +224,41 @@ describe('workshop: what you can customize (Story)', () => {
   })
 })
 
+describe('workshop: secrets and your own settings (Story)', () => {
+  it('starts a secret empty, sends it as typed, and removes it for administrators only', () => {
+    Story.story(
+      Workshop.update,
+      Story.given(model()),
+      Story.message(Workshop.Message.ClickedEditSettings({ extension: 'related' })),
+      Story.model(next => assert.deepStrictEqual(next.editing?.values, { max: '5', urgentAction: 'true', token: '' })),
+      Story.message(Workshop.Message.ClickedClearSecret({ key: 'max' })),
+      Story.message(Workshop.Message.ClickedClearSecret({ key: 'token' })),
+      Command.expectExact(Workshop.ClearSecret({ extension: 'related', key: 'token', author: ada.name })),
+      Story.model(next => assert.isNull(next.editing)),
+      Command.resolve(Workshop.ClearSecret, Workshop.Message.CompletedSettings({ message: 'Removed.' })),
+    )
+  })
+
+  it('lets every member change and reset their own values, and nothing else', () => {
+    Story.story(
+      Workshop.update,
+      Story.given(model([], [], grace)),
+      Story.message(Workshop.Message.ClickedEditSettings({ extension: 'related' })),
+      Story.model(next => assert.isNull(next.editing)),
+      Story.message(Workshop.Message.ClickedEditMine({ extension: 'related' })),
+      Story.model(next => assert.deepStrictEqual(next.editing, { extension: 'related', values: { max: '3' }, mine: true })),
+      Story.message(Workshop.Message.ClickedClearSecret({ key: 'token' })),
+      Story.message(Workshop.Message.ChangedSetting({ key: 'max', value: '2' })),
+      Story.message(Workshop.Message.SubmittedSettings()),
+      Command.expectExact(Workshop.ConfigureMine({ extension: 'related', memberId: grace.id, values: { max: '2' } })),
+      Command.resolve(Workshop.ConfigureMine, Workshop.Message.CompletedSettings({ message: 'Saved your settings.' })),
+      Story.message(Workshop.Message.ClickedResetMine({ extension: 'related' })),
+      Command.expectExact(Workshop.ResetMine({ extension: 'related', memberId: grace.id })),
+      Command.resolve(Workshop.ResetMine, Workshop.Message.CompletedSettings({ message: 'Back on the defaults.' })),
+    )
+  })
+})
+
 describe('workshop: settings (Story)', () => {
   it('edits an extension’s settings as text and sends them to configure', () => {
     Story.story(
@@ -223,14 +268,14 @@ describe('workshop: settings (Story)', () => {
       Story.message(Workshop.Message.ClickedEditSettings({ extension: 'standup' })),
       Story.model(next => assert.isNull(next.editing)),
       Story.message(Workshop.Message.ClickedEditSettings({ extension: 'related' })),
-      Story.model(next => assert.deepStrictEqual(next.editing, { extension: 'related', values: { max: '5', urgentAction: 'true' } })),
+      Story.model(next => assert.deepStrictEqual(next.editing, { extension: 'related', values: { max: '5', urgentAction: 'true', token: '' }, mine: false })),
       Story.message(Workshop.Message.ChangedSetting({ key: 'max', value: '8' })),
       // Keys that are not settings are ignored.
       Story.message(Workshop.Message.ChangedSetting({ key: 'other', value: 'x' })),
       Story.message(Workshop.Message.ClickedToggleSetting({ key: 'urgentAction' })),
       Story.message(Workshop.Message.SubmittedSettings()),
       Command.expectExact(
-        Workshop.Configure({ extension: 'related', values: { max: '8', urgentAction: 'false' }, author: ada.name }),
+        Workshop.Configure({ extension: 'related', values: { max: '8', urgentAction: 'false', token: '' }, author: ada.name }),
       ),
       Story.model(next => assert.isNull(next.editing)),
       Command.resolve(Workshop.Configure, Workshop.Message.CompletedSettings({ message: 'Saved.' })),
@@ -293,6 +338,10 @@ describe('workshop: the page over HTTP', () => {
         undoSettings: () => Effect.void,
         settingsChanges: Stream.make([change('two', 'applied')]),
         currentSettingsChanges: Effect.succeed([change('two', 'applied')]),
+        clearSecrets: () => Effect.fail('not in this test'),
+        memberSettings: () => Stream.make([relatedMine]),
+        configureMember: () => Effect.void,
+        resetMember: () => Effect.void,
       }),
     ),
   )
@@ -348,6 +397,11 @@ describe('workshop: the page over HTTP', () => {
       assert.include(page.html, 'id="changes-one"')
       assert.include(page.html, 'id="customize-issues-palette"')
       assert.notInclude(page.html, 'id="try-issues-palette"')
+      // Their own settings, with what is theirs and what is the default.
+      assert.include(page.html, 'id="mine-edit-related"')
+      assert.include(page.html, 'Issues shown: 3 (yours)')
+      // A secret shows only as set.
+      assert.include(page.html, 'token set')
     } finally {
       await server.dispose()
     }

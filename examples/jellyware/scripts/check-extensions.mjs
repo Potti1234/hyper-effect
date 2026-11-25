@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -193,6 +193,62 @@ try {
     check('on the other person’s page too', await until(grace.page, () => document.querySelector('#card-related h3')?.textContent === 'Related'))
   }
 
+  // SECRET SETTINGS (extensions/triage: inboxToken)
+  if (target !== null) {
+    const TOKEN = `sk-check-${Date.now()}`
+    await ada.page.goto(`${base}/extensions`)
+    await ada.page.waitForSelector('#settings-triage')
+    await ada.page.waitForTimeout(300)
+    await ada.page.click('#settings-triage')
+    await ada.page.waitForSelector('#setting-triage-inboxToken')
+    check('a secret setting is a password field, empty', (await ada.page.getAttribute('#setting-triage-inboxToken', 'type')) === 'password' && (await ada.page.inputValue('#setting-triage-inboxToken')) === '')
+    await ada.page.fill('#setting-triage-inboxToken', TOKEN)
+    await ada.page.click('#settings-save-triage')
+    check('it is saved', await until(ada.page, () => (document.querySelector('#workshop-notice')?.textContent ?? '').includes('Saved')))
+    check('and shows only as set', await until(ada.page, () => (document.querySelector('#extension-triage')?.textContent ?? '').includes('inboxToken set')))
+    const html = await ada.page.content()
+    check('the page never holds the secret', !html.includes(TOKEN))
+    const sessions = fileURLToPath(new URL('../.hyper-sessions', import.meta.url))
+    const leaked = readdirSync(sessions, { recursive: true }).some(file => {
+      try {
+        return readFileSync(join(sessions, String(file)), 'utf8').includes(TOKEN)
+      } catch {
+        return false
+      }
+    })
+    check('nor the settings store, in the clear', !leaked)
+    await grace.page.goto(`${base}/triage`)
+    check('the extension has it (its page says the token is set)', await until(grace.page, () => document.querySelector('#triage-inbox')?.dataset.connected === 'true'))
+    check('and the page holds no token', !(await grace.page.content()).includes(TOKEN))
+    await ada.page.click('#settings-triage')
+    await ada.page.waitForSelector('#clear-triage-inboxToken')
+    await ada.page.click('#clear-triage-inboxToken')
+    check('removing it reaches the extension', await until(grace.page, () => document.querySelector('#triage-inbox')?.dataset.connected === 'false'))
+  }
+
+  // YOUR OWN SETTINGS (extensions/related: max is a member setting)
+  if (target !== null) {
+    await openIssue(ada.page, target)
+    await openIssue(grace.page, target)
+    const items = person => person.page.evaluate(() => document.querySelectorAll('#card-related li').length)
+    const adaBefore = await items(ada)
+    await grace.page.goto(`${base}/extensions`)
+    await grace.page.waitForSelector('#mine-edit-related')
+    await grace.page.waitForTimeout(300)
+    await grace.page.click('#mine-edit-related')
+    await grace.page.waitForSelector('#my-setting-related-max')
+    await grace.page.fill('#my-setting-related-max', '1')
+    await grace.page.click('#my-settings-save-related')
+    check('a member changes a setting for themselves', await until(grace.page, () => (document.querySelector('#mine-values-related')?.textContent ?? '').includes('1 (yours)')))
+    await openIssue(grace.page, target)
+    check('their card follows it', (await items(grace)) <= 1, String(await items(grace)))
+    check('another member’s card does not', (await items(ada)) === adaBefore && adaBefore > 1, `${adaBefore}`)
+    await grace.page.goto(`${base}/extensions`)
+    await grace.page.waitForSelector('#mine-reset-related')
+    await grace.page.click('#mine-reset-related')
+    check('and goes back to the default', await until(grace.page, () => (document.querySelector('#mine-values-related')?.textContent ?? '').includes('(default)')))
+  }
+
   // SLOTS IN THE ISSUE LISTS
   const openList = async path => {
     const stream = ada.page.waitForRequest(request => request.url().includes('/stream'))
@@ -318,7 +374,9 @@ try {
     console.log('SKIP changes by prompt (start the server with JELLYWARE_AGENT=script)')
   }
 
-  const errors = people.flatMap(person => person.errors).filter(error => !error.includes('/_hyper/standup/'))
+  // A swapped extension's open page loses its stream once and reconnects
+  // (standup swaps its files, triage its settings): not an error.
+  const errors = people.flatMap(person => person.errors).filter(error => !error.includes('/_hyper/standup/') && !error.includes('/_hyper/triage/'))
   check('no errors in the browser console', errors.length === 0, errors.slice(0, 3).join(' | '))
 } finally {
   await browser.close()

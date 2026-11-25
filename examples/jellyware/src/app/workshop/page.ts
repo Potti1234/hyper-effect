@@ -12,8 +12,11 @@ import {
   Extensions,
   FileDiff,
   Inventory,
+  MemberSettings,
   Run,
+  type SettingField,
   SettingsChange,
+  isMemberSetting,
 } from '@hyper-effect/jellyware'
 
 import { renderTextarea } from '@/lib/textarea'
@@ -45,7 +48,14 @@ const HostedPage = S.Struct({ name: S.String, paths: S.Array(S.String), owner: S
 type HostedPage = typeof HostedPage.Type
 
 /** The settings form open for one extension: the text of each field. */
-const Editing = S.Struct({ extension: S.String, values: S.Record(S.String, S.String) })
+/** The settings form open for one extension: the text of each field, and
+ *  whether it is the member's own settings or the extension's (for
+ *  administrators). A secret's text is what was typed to replace it. */
+const Editing = S.Struct({
+  extension: S.String,
+  values: S.Record(S.String, S.String),
+  mine: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(false))),
+})
 type Editing = typeof Editing.Type
 
 export const Model = S.Struct({
@@ -57,6 +67,8 @@ export const Model = S.Struct({
   /** What extensions registered, and the pages they serve. */
   inventory: Inventory,
   pages: S.Array(HostedPage),
+  /** The member settings of every extension as this member has them. */
+  mySettings: S.Array(MemberSettings),
   /** What runs change, by run id: the runs in review and those in `shown`. */
   diffs: S.Record(S.String, S.Array(FileDiff)),
   /** Runs not in review whose changes the member opened. */
@@ -81,6 +93,10 @@ export const Message = defineMessageUnion({
   ClickedHideChanges: { runId: S.String },
   ClickedSetRole: { memberId: S.String, role: Role },
   ClickedTryExample: { id: S.String },
+  ClickedClearSecret: { key: S.String },
+  ClickedEditMine: { extension: S.String },
+  ClickedResetMine: { extension: S.String },
+  GotMySettings: { settings: S.Array(MemberSettings) },
   GotInventory: { inventory: Inventory },
   GotPages: { pages: S.Array(HostedPage) },
   GotShell: { shell: Shell },
@@ -115,6 +131,9 @@ export const ClientMessage = S.Union([
   Message.ClickedHideChanges,
   Message.ClickedSetRole,
   Message.ClickedTryExample,
+  Message.ClickedClearSecret,
+  Message.ClickedEditMine,
+  Message.ClickedResetMine,
   Message.ClickedEditSettings,
   Message.ClickedCancelSettings,
   Message.ClickedToggleSetting,
@@ -187,6 +206,40 @@ export const Configure = Command.define('Workshop.Configure', {
     ),
 })
 
+export const ClearSecret = Command.define('Workshop.ClearSecret', {
+  args: { extension: S.String, key: S.String, author: S.String },
+  messages: [Message.CompletedSettings],
+  execute: ({ extension, key, author }) =>
+    Extensions.use(extensions => extensions.clearSecrets(extension, [key], author)).pipe(
+      Effect.map(change => (change.state === 'applied' ? 'Removed. The extension runs without it.' : `Put back: ${change.error ?? ''}`)),
+      Effect.catch(message => Effect.succeed(message)),
+      Effect.map(message => Message.CompletedSettings({ message })),
+    ),
+})
+
+/** A member's own values of member settings: no new build of the
+ *  extension, so no put-back either. */
+export const ConfigureMine = Command.define('Workshop.ConfigureMine', {
+  args: { extension: S.String, memberId: S.String, values: S.Record(S.String, S.String) },
+  messages: [Message.CompletedSettings],
+  execute: ({ extension, memberId, values }) =>
+    Extensions.use(extensions => extensions.configureMember(extension, memberId, values)).pipe(
+      Effect.as('Saved your settings.'),
+      Effect.catch(message => Effect.succeed(message)),
+      Effect.map(message => Message.CompletedSettings({ message })),
+    ),
+})
+
+export const ResetMine = Command.define('Workshop.ResetMine', {
+  args: { extension: S.String, memberId: S.String },
+  messages: [Message.CompletedSettings],
+  execute: ({ extension, memberId }) =>
+    Extensions.use(extensions => extensions.resetMember(extension, memberId)).pipe(
+      Effect.as('Back on the defaults.'),
+      Effect.map(message => Message.CompletedSettings({ message })),
+    ),
+})
+
 export const UndoSettings = Command.define('Workshop.UndoSettings', {
   args: { changeId: S.String },
   messages: [Message.CompletedSettings],
@@ -208,6 +261,7 @@ type Flags = Readonly<{
   members: ReadonlyArray<Member>
   inventory: Inventory
   pages: ReadonlyArray<HostedPage>
+  mySettings: ReadonlyArray<MemberSettings>
 }>
 
 export const init = (flags: Flags): Update.Return<Model, Message> => ({
@@ -219,6 +273,7 @@ export const init = (flags: Flags): Update.Return<Model, Message> => ({
     members: flags.members,
     inventory: flags.inventory,
     pages: flags.pages,
+    mySettings: flags.mySettings,
     diffs: {},
     shown: [],
     prompt: '',
@@ -230,6 +285,10 @@ export const init = (flags: Flags): Update.Return<Model, Message> => ({
 // UPDATE
 
 type UpdateReturn = Update.Return<Model, Message, Changes | Extensions | Workspace>
+
+/** The form's text for fields: a secret starts empty (empty keeps it). */
+const formValues = (fields: ReadonlyArray<SettingField>): Readonly<Record<string, string>> =>
+  Object.fromEntries(fields.map(field => [field.key, field.spec.type === 'secret' ? '' : String(field.value)]))
 
 /** Runs whose changes can be shown: those that got as far as review or
  *  install. */
@@ -285,8 +344,10 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       },
       GotInventory: ({ inventory }) => ({ model: { ...model, inventory } }),
       GotPages: ({ pages }) => ({ model: { ...model, pages } }),
-      // A member who loses the role mid-edit loses the open form.
-      GotShell: ({ shell }) => ({ model: { ...model, shell, editing: isAdmin(shell.me) ? model.editing : null } }),
+      // A member who loses the role mid-edit loses the extension's form.
+      GotShell: ({ shell }) => ({
+        model: { ...model, shell, editing: isAdmin(shell.me) || model.editing?.mine === true ? model.editing : null },
+      }),
       GotMembers: ({ members }) => ({ model: { ...model, members } }),
       GotDiffs: ({ diffs }) => ({ model: { ...model, diffs } }),
       GotRuns: ({ runs }) => ({ model: { ...model, runs } }),
@@ -297,9 +358,30 @@ export const update = (model: Model, message: Message): UpdateReturn =>
         if (!admin(model)) return { model }
         const found = model.extensions.find(other => other.id === extension)
         if (found === undefined || found.settings.length === 0) return { model }
-        const values = Object.fromEntries(found.settings.map(field => [field.key, String(field.value)]))
-        return { model: { ...model, editing: { extension, values }, notice: null } }
+        return { model: { ...model, editing: { extension, values: formValues(found.settings), mine: false }, notice: null } }
       },
+      // Every member, for their own values of member settings.
+      ClickedEditMine: ({ extension }) => {
+        const found = model.mySettings.find(other => other.extension === extension)
+        if (found === undefined) return { model }
+        return { model: { ...model, editing: { extension, values: formValues(found.fields), mine: true }, notice: null } }
+      },
+      ClickedResetMine: ({ extension }) =>
+        model.mySettings.some(other => other.extension === extension && other.own.length > 0)
+          ? { model: { ...model, editing: null, notice: null }, commands: [ResetMine({ extension, memberId: model.shell.me.id })] }
+          : { model },
+      ClickedClearSecret: ({ key }) => {
+        const editing = model.editing
+        if (editing === null || editing.mine || !admin(model)) return { model }
+        const field = model.extensions.find(other => other.id === editing.extension)?.settings.find(other => other.key === key)
+        return field === undefined || field.spec.type !== 'secret' || !field.isSet
+          ? { model }
+          : {
+              model: { ...model, editing: null, notice: 'Loading the extension without it…' },
+              commands: [ClearSecret({ extension: editing.extension, key, author: model.shell.me.name })],
+            }
+      },
+      GotMySettings: ({ settings }) => ({ model: { ...model, mySettings: settings } }),
       ClickedCancelSettings: () => ({ model: { ...model, editing: null } }),
       ChangedSetting: ({ key, value }) =>
         model.editing === null || !(key in model.editing.values)
@@ -320,12 +402,19 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       // The values are checked against the extension's declaration by
       // `configure`; what a browser sends here is only text.
       SubmittedSettings: () =>
-        model.editing === null || !admin(model)
+        model.editing === null
           ? { model }
-          : {
-              model: { ...model, editing: null, notice: 'Loading the extension with the new settings…' },
-              commands: [Configure({ extension: model.editing.extension, values: model.editing.values, author: model.shell.me.name })],
-            },
+          : model.editing.mine
+            ? {
+                model: { ...model, editing: null, notice: null },
+                commands: [ConfigureMine({ extension: model.editing.extension, memberId: model.shell.me.id, values: model.editing.values })],
+              }
+            : !admin(model)
+              ? { model }
+              : {
+                  model: { ...model, editing: null, notice: 'Loading the extension with the new settings…' },
+                  commands: [Configure({ extension: model.editing.extension, values: model.editing.values, author: model.shell.me.name })],
+                },
       ClickedUndoSettings: ({ changeId }) =>
         admin(model) && model.settingsChanges.some(change => change.id === changeId && change.state === 'applied')
           ? { model: { ...model, notice: null }, commands: [UndoSettings({ changeId })] }
@@ -364,6 +453,18 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Contr
       modelToDependencies: () => ({}),
       dependenciesToStream: () =>
         Stream.unwrap(Contributions.use(contributions => Effect.succeed(contributions.inventoryChanges.pipe(Stream.map(gotInventory))))),
+    },
+  ),
+  mySettings: entry(
+    { memberId: S.String },
+    {
+      modelToDependencies: model => ({ memberId: model.shell.me.id }),
+      dependenciesToStream: ({ memberId }) =>
+        Stream.unwrap(
+          Extensions.use(extensions =>
+            Effect.succeed(extensions.memberSettings(memberId).pipe(Stream.map(settings => Message.GotMySettings({ settings })))),
+          ),
+        ),
     },
   ),
   // Pages come and go with extensions: read again after each change.
@@ -652,6 +753,12 @@ const runView = (run: Run, model: Model, h: HtmlBuilder<Message>): Html => {
   )
 }
 
+/** Fields as "max 5, token set". */
+const describeFields = (fields: ReadonlyArray<SettingField>) =>
+  fields
+    .map(field => `${field.key} ${field.spec.type === 'secret' ? (field.isSet ? 'set' : 'not set') : String(field.value)}`)
+    .join(', ')
+
 const describeValues = (values: Readonly<Record<string, string | number | boolean>>) =>
   Object.entries(values)
     .map(([key, value]) => `${key} ${String(value)}`)
@@ -664,15 +771,53 @@ const describeChange = (change: SettingsChange) =>
     .map(key => `${key} ${String(change.before[key])} → ${String(change.after[key])}`)
     .join(', ') || describeValues(change.after)
 
-const settingsForm = (extension: ExtensionStatus, editing: Editing, h: HtmlBuilder<Message>): Html =>
+/** The form for an extension's settings (`prefix` `settings`) or a
+ *  member's own (`my-settings`). */
+const settingsForm = (
+  prefix: 'settings' | 'my-settings',
+  extension: string,
+  fields: ReadonlyArray<SettingField>,
+  editing: Editing,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.form(
-    [h.Id(`settings-form-${extension.id}`), h.OnSubmit(Message.SubmittedSettings()), h.Class('mt-2 flex flex-col gap-2 rounded-md border bg-background p-2.5')],
+    [h.Id(`${prefix}-form-${extension}`), h.OnSubmit(Message.SubmittedSettings()), h.Class('mt-2 flex flex-col gap-2 rounded-md border bg-background p-2.5')],
     [
-      ...extension.settings.map(field => {
-        const id = `setting-${extension.id}-${field.key}`
+      ...fields.map(field => {
+        const id = `${prefix === 'settings' ? 'setting' : 'my-setting'}-${extension}-${field.key}`
         const text = editing.values[field.key] ?? ''
         const input =
-          field.spec.type === 'boolean'
+          field.spec.type === 'secret'
+            ? h.div(
+                [h.Class('flex items-center gap-1.5')],
+                [
+                  h.input([
+                    h.Id(id),
+                    h.Type('password'),
+                    h.Autocomplete('new-password'),
+                    h.Value(text),
+                    h.Placeholder(field.isSet ? 'Set. Type a new value to replace it.' : 'Not set'),
+                    h.Class('h-7 w-full rounded-md border bg-background px-2 text-[12px]'),
+                    h.OnInput(value => Message.ChangedSetting({ key: field.key, value })),
+                  ]),
+                  ...(field.isSet
+                    ? [
+                        button(
+                          {
+                            id: `clear-${extension}-${field.key}`,
+                            children: ['Remove'],
+                            variant: 'ghost',
+                            size: 'sm',
+                            class: 'h-7 text-[12px]',
+                            onClick: Message.ClickedClearSecret({ key: field.key }),
+                          },
+                          h,
+                        ),
+                      ]
+                    : []),
+                ],
+              )
+            : field.spec.type === 'boolean'
             ? h.input([
                 h.Id(id),
                 h.Type('checkbox'),
@@ -698,7 +843,12 @@ const settingsForm = (extension: ExtensionStatus, editing: Editing, h: HtmlBuild
           field.spec.type === 'boolean'
             ? [input, field.spec.label]
             : [
-                h.span([h.Class('font-medium')], [field.spec.label]),
+                h.span([h.Class('font-medium')], [
+                  field.spec.label,
+                  ...(prefix === 'settings' && isMemberSetting(field.spec)
+                    ? [h.span([h.Class('font-normal text-muted-foreground')], [' · the default; each member may choose their own'])]
+                    : []),
+                ]),
                 input,
                 ...(field.spec.description === undefined ? [] : [h.span([h.Class('text-[11px] text-muted-foreground')], [field.spec.description])]),
               ],
@@ -707,8 +857,8 @@ const settingsForm = (extension: ExtensionStatus, editing: Editing, h: HtmlBuild
       h.div(
         [h.Class('flex justify-end gap-1.5')],
         [
-          button({ id: `settings-cancel-${extension.id}`, children: ['Cancel'], variant: 'ghost', size: 'sm', class: 'h-7 text-[12px]', onClick: Message.ClickedCancelSettings() }, h),
-          button({ id: `settings-save-${extension.id}`, children: ['Save'], type: 'submit', size: 'sm', class: 'h-7 text-[12px]' }, h),
+          button({ id: `${prefix}-cancel-${extension}`, children: ['Cancel'], variant: 'ghost', size: 'sm', class: 'h-7 text-[12px]', onClick: Message.ClickedCancelSettings() }, h),
+          button({ id: `${prefix}-save-${extension}`, children: ['Save'], type: 'submit', size: 'sm', class: 'h-7 text-[12px]' }, h),
         ],
       ),
     ],
@@ -817,15 +967,15 @@ const extensionRow = (extension: ExtensionStatus, model: Model, h: HtmlBuilder<M
         : [h.pre([h.Class('mt-1 max-h-32 overflow-auto text-[11px] whitespace-pre-wrap text-destructive')], [extension.error])]),
       ...(extension.settings.length === 0
         ? []
-        : editing !== null && editing.extension === extension.id
-          ? [settingsForm(extension, editing, h)]
+        : editing !== null && !editing.mine && editing.extension === extension.id
+          ? [settingsForm('settings', extension.id, extension.settings, editing, h)]
           : [
               h.div(
                 [h.Class('mt-1 flex items-center gap-2')],
                 [
                   h.span(
                     [h.Class('min-w-0 flex-1 truncate text-[11px] text-muted-foreground')],
-                    [describeValues(Object.fromEntries(extension.settings.map(field => [field.key, field.value])))],
+                    [describeFields(extension.settings)],
                   ),
                   ...(canChange
                     ? [
@@ -919,6 +1069,73 @@ const customizeView = (model: Model, h: HtmlBuilder<Message>): Html =>
     ],
   )
 
+/** Every member's own values of member settings. */
+const mySettingsView = (model: Model, h: HtmlBuilder<Message>): Html =>
+  h.section(
+    [h.Id('workshop-mine')],
+    [
+      h.h2([h.Class('mb-1 text-[12px] font-medium text-muted-foreground')], ['Your settings']),
+      model.mySettings.length === 0
+        ? h.p([h.Class('text-[12px] text-muted-foreground')], ['No extension has settings of your own.'])
+        : h.ul(
+            [h.Class('divide-y')],
+            model.mySettings.map(settings =>
+              h.li(
+                [h.Id(`mine-${settings.extension}`), h.Class('py-2 text-[12px]')],
+                [
+                  h.div(
+                    [h.Class('flex items-center gap-2')],
+                    [
+                      h.span([h.Class('flex-1 font-medium')], [settings.name]),
+                      ...(model.editing?.mine === true && model.editing.extension === settings.extension
+                        ? []
+                        : [
+                            ...(settings.own.length === 0
+                              ? []
+                              : [
+                                  button(
+                                    {
+                                      id: `mine-reset-${settings.extension}`,
+                                      children: ['Use defaults'],
+                                      variant: 'ghost',
+                                      size: 'sm',
+                                      class: 'h-6 text-[11px]',
+                                      onClick: Message.ClickedResetMine({ extension: settings.extension }),
+                                    },
+                                    h,
+                                  ),
+                                ]),
+                            button(
+                              {
+                                id: `mine-edit-${settings.extension}`,
+                                children: ['Change'],
+                                variant: 'outline',
+                                size: 'sm',
+                                class: 'h-6 text-[11px]',
+                                onClick: Message.ClickedEditMine({ extension: settings.extension }),
+                              },
+                              h,
+                            ),
+                          ]),
+                    ],
+                  ),
+                  model.editing?.mine === true && model.editing.extension === settings.extension
+                    ? settingsForm('my-settings', settings.extension, settings.fields, model.editing, h)
+                    : h.p(
+                        [h.Id(`mine-values-${settings.extension}`), h.Class('mt-0.5 text-[11px] text-muted-foreground')],
+                        [
+                          settings.fields
+                            .map(field => `${field.spec.label}: ${String(field.value)}${settings.own.includes(field.key) ? ' (yours)' : ' (default)'}`)
+                            .join(', '),
+                        ],
+                      ),
+                ],
+              ),
+            ),
+          ),
+    ],
+  )
+
 const membersView = (model: Model, h: HtmlBuilder<Message>): Html =>
   h.section(
     [h.Id('workshop-members')],
@@ -995,6 +1212,11 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
             [h.Class('flex min-w-0 flex-col gap-6')],
             [
               region(h, {
+                id: 'workshop-mine',
+                deps: [model.mySettings, model.editing],
+                render: () => mySettingsView(model, h),
+              }),
+              region(h, {
                 id: 'workshop-extensions',
                 deps: [model.extensions, model.editing, model.settingsChanges, admin(model), model.inventory, model.pages],
                 render: () =>
@@ -1034,7 +1256,10 @@ export const program: Program<Model, Message, ClientMessage, Flags, Workspace | 
       const members = (yield* Workspace.use(workspace => workspace.current)).members
       const inventory = yield* Contributions.use(contributions => contributions.inventory)
       const pages = yield* PageHost.use(host => host.pages)
-      return { shell, runs, extensions, settingsChanges, members, inventory, pages }
+      const mySettings = yield* Extensions.use(extensions => Stream.runHead(extensions.memberSettings(shell.me.id))).pipe(
+        Effect.map(head => (head._tag === 'Some' ? head.value : [])),
+      )
+      return { shell, runs, extensions, settingsChanges, members, inventory, pages, mySettings }
     }),
   init,
   update,

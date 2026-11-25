@@ -3,7 +3,7 @@ import { Command, Subscription, type Update } from 'foldkit'
 import type { Document, Html, HtmlBuilder } from 'foldkit/html'
 import { defineMessageUnion } from 'foldkit/message'
 import { type Program, memoizeLast, region } from '@hyper-effect/core'
-import type { Contributions } from '@hyper-effect/jellyware'
+import { type Contributions, ExtensionSettings } from '@hyper-effect/jellyware'
 
 import { Issue, statusLabel } from '#app/domain'
 import { Shell, frame, loadShell, shellChanges } from '#app/extensions'
@@ -17,6 +17,8 @@ export const Model = S.Struct({
   issues: S.Array(Issue),
   pending: S.Array(S.String),
   error: S.NullOr(S.String),
+  /** Whether the secret setting `inboxToken` is set; never the token. */
+  inboxConnected: S.Boolean,
 })
 export type Model = typeof Model.Type
 
@@ -25,12 +27,13 @@ export const Message = defineMessageUnion({
   FinishedTake: { issueId: S.String, error: S.NullOr(S.String) },
   GotIssues: { issues: S.Array(Issue) },
   GotShell: { shell: Shell },
+  GotInbox: { connected: S.Boolean },
 })
 export type Message = typeof Message.Type
 export const ClientMessage = S.Union([Message.ClickedTake])
 export type ClientMessage = typeof ClientMessage.Type
 
-type Flags = Readonly<{ shell: Shell; issues: ReadonlyArray<Issue> }>
+type Flags = Readonly<{ shell: Shell; issues: ReadonlyArray<Issue>; inboxConnected: boolean }>
 
 export const eligible = (issue: Issue): boolean =>
   issue.assigneeId === null && (issue.status === 'backlog' || issue.status === 'todo')
@@ -85,13 +88,24 @@ export const update = (model: Model, message: Message): Update.Return<Model, Mes
         model: { ...model, pending: model.pending.filter(id => id !== issueId), error },
       }),
       GotIssues: ({ issues }) => ({ model: { ...model, issues } }),
+      GotInbox: ({ connected }) => ({ model: { ...model, inboxConnected: connected } }),
       GotShell: ({ shell }) => ({ model: { ...model, shell } }),
     }),
   )
 
 const gotIssues = memoizeLast((issues: ReadonlyArray<Issue>) => Message.GotIssues({ issues }))
 
-export const subscriptions = Subscription.make<Model, Message, Workspace | Contributions>()(entry => ({
+export const subscriptions = Subscription.make<Model, Message, Workspace | Contributions | ExtensionSettings>()(entry => ({
+  // From the version serving the page: a session moved to a new version
+  // (its settings changed) hears the new value.
+  inbox: entry(
+    {},
+    {
+      modelToDependencies: () => ({}),
+      dependenciesToStream: () =>
+        Stream.unwrap(ExtensionSettings.use(settings => Effect.succeed(Stream.succeed(Message.GotInbox({ connected: settings.hasSecret('inboxToken') }))))),
+    },
+  ),
   shell: entry(
     { memberId: S.String },
     {
@@ -144,7 +158,15 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
   body: frame(model.shell, PATH, [
     h.header([h.Class('flex h-11 items-center gap-3 border-b px-4')], [
       h.h1([h.Class('text-[13px] font-semibold')], ['Triage']),
-      h.span([h.Class('text-[13px] text-muted-foreground')], ['Unassigned · Backlog and Todo · Newest first']),
+      h.span([h.Class('flex-1 text-[13px] text-muted-foreground')], ['Unassigned · Backlog and Todo · Newest first']),
+      region(h, {
+        id: 'triage-inbox',
+        deps: [model.inboxConnected],
+        render: () =>
+          h.span([h.Id('triage-inbox'), h.Class('text-[12px] text-muted-foreground'), h.DataAttribute('connected', String(model.inboxConnected))], [
+            model.inboxConnected ? 'Support inbox: token set' : 'Support inbox: no token',
+          ]),
+      }),
     ]),
     region(h, {
       id: 'triage-notice', deps: [model.error],
@@ -167,14 +189,15 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
   ], h),
 })
 
-export const program: Program<Model, Message, ClientMessage, Flags, Workspace | Contributions> = {
+export const program: Program<Model, Message, ClientMessage, Flags, Workspace | Contributions | ExtensionSettings> = {
   name: 'triage',
   Model,
   ClientMessage,
   flags: request => Effect.gen(function* () {
     const shell = yield* loadShell(request)
     const state = yield* Workspace.use(workspace => workspace.current)
-    return { shell, issues: issuesOf(state) }
+    const settings = yield* ExtensionSettings
+    return { shell, issues: issuesOf(state), inboxConnected: settings.hasSecret('inboxToken') }
   }),
   init,
   update,

@@ -1,5 +1,5 @@
 import { NodeHttpServer, NodeRuntime, NodeServices } from '@effect/platform-node'
-import { Layer } from 'effect'
+import { Layer, Redacted } from 'effect'
 import { HttpRouter, HttpServerResponse } from 'effect/http'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
@@ -26,8 +26,8 @@ import * as Workshop from '@/app/workshop/page'
    Environment:
    - PORT (default 4200)
    - APP_SECRET signs the sign-in cookie; HYPER_SNAPSHOT_SECRET seals session
-     snapshots. Both have development values in the source: set them
-     everywhere else.
+     snapshots; JELLYWARE_SECRETS_KEY encrypts extensions' secret settings.
+     All have development values in the source: set them everywhere else.
    - JELLYWARE_WATCH=0 turns off reloading extensions when their files
      change (on by default).
    - JELLYWARE_AGENT=script replaces pi with a scripted agent (browser
@@ -57,6 +57,8 @@ const Loaded = Jellyware.layer({
   directory: extensionsDirectory,
   requires: Extensions.requires,
   watch: process.env['JELLYWARE_WATCH'] !== '0',
+  // Encrypts secret settings at rest.
+  secretKey: Redacted.make(Hyper.secretFromEnvironment('JELLYWARE_SECRETS_KEY', 'dev-secrets-key, set JELLYWARE_SECRETS_KEY')),
 }).pipe(
   // The graph sees the app's services, so extensions can require them.
   Layer.provide(Jellyware.graph),
