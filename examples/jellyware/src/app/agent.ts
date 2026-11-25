@@ -6,9 +6,9 @@ import { homedir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { Effect, Schema as S, Semaphore } from 'effect'
+import { Cause, Effect, Option, Queue, Schema as S, Semaphore, Stream } from 'effect'
 
-import { type Agent, AgentError, type Check, type Task, isTestFile } from '@hyper-effect/jellyware'
+import { type Agent, AgentError, type AgentEvent, type Check, type RunState, type Task, isTestFile } from '@hyper-effect/jellyware'
 
 import type { Guard } from '../pi-guard.ts'
 import { importRules } from './extension-rules.ts'
@@ -19,9 +19,12 @@ import { remoteServices } from './remote.ts'
    tests.
 
    The agent is pi (https://github.com/badlogic/pi-mono), run once per
-   attempt in print mode, in the run's stage folder, with file tools only
-   (read, edit, write, grep, find, ls; no shell). A retry continues the same
-   pi session with what failed. Its system prompt gets the rules below and
+   attempt in JSON mode, in the run's stage folder, with file tools only
+   (read, edit, write, grep, find, ls; no shell). Its events (what it says,
+   each tool call and its outcome) go to the run's activity as they come; its
+   last message is the answer. A retry continues the same pi session with
+   what failed; a follow-up in a conversation forks the session of the run
+   before it, told what became of that run. Its system prompt gets the rules below and
    the app's guide: the pages, slots, commands, sidebar entries and
    extensions running now (`guide` in @hyper-effect/jellyware). The pi extension in src/pi-guard.ts limits
    those tools: writes only in the stage, reads in the stage and the
@@ -111,6 +114,132 @@ const runNode = (args: ReadonlyArray<string>, options: Readonly<{ cwd: string; e
     return Effect.sync(() => child.kill())
   })
 
+/** Runs a Node program without a shell and hands each line of its stdout
+ *  to `onLine` as it comes; fails with the end of stderr. */
+const runNodeLines = <E>(
+  args: ReadonlyArray<string>,
+  options: Readonly<{ cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }>,
+  onLine: (line: string) => Effect.Effect<void, E>,
+) =>
+  Stream.callback<string, string>(queue =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const child = spawn(process.execPath, [...args], {
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        })
+        // Records end at LF only (pi's framing); a JSON string may hold
+        // other line separators.
+        let pending = ''
+        let stderr = ''
+        const emit = (line: string) => {
+          const trimmed = line.replace(/\r$/, '')
+          if (trimmed !== '') Queue.offerUnsafe(queue, trimmed)
+        }
+        child.stdout.setEncoding('utf8')
+        child.stdout.on('data', (chunk: string) => {
+          pending += chunk
+          let at = pending.indexOf('\n')
+          while (at !== -1) {
+            emit(pending.slice(0, at))
+            pending = pending.slice(at + 1)
+            at = pending.indexOf('\n')
+          }
+        })
+        child.stderr.on('data', chunk => (stderr = (stderr + String(chunk)).slice(-8000)))
+        const timer = setTimeout(() => child.kill(), options.timeoutMs)
+        child.on('error', error => Queue.failCauseUnsafe(queue, Cause.fail(String(error))))
+        child.on('close', code => {
+          clearTimeout(timer)
+          emit(pending)
+          if (code === 0) Queue.endUnsafe(queue)
+          else Queue.failCauseUnsafe(queue, Cause.fail(`${stderr.slice(-4000)}\n(exit ${code})`))
+        })
+        return child
+      }),
+      child => Effect.sync(() => child.kill()),
+    ),
+  ).pipe(Stream.runForEach(onLine))
+
+// PI'S EVENTS (docs/json.md of pi): the ones the activity shows.
+
+const TextBlock = S.Struct({ type: S.Literal('text'), text: S.String })
+const AnyBlock = S.Struct({ type: S.String })
+const PiEvent = S.Union([
+  S.Struct({ type: S.Literal('tool_execution_start'), toolCallId: S.String, toolName: S.String, args: S.optional(S.Unknown) }),
+  S.Struct({
+    type: S.Literal('tool_execution_end'),
+    toolCallId: S.String,
+    toolName: S.String,
+    isError: S.Boolean,
+    result: S.optional(S.Struct({ content: S.optional(S.Array(S.Union([TextBlock, AnyBlock]))) })),
+  }),
+  S.Struct({
+    type: S.Literal('message_end'),
+    message: S.Struct({
+      role: S.String,
+      content: S.optional(S.Union([S.String, S.Array(S.Union([TextBlock, AnyBlock]))])),
+      stopReason: S.optional(S.String),
+      errorMessage: S.optional(S.String),
+    }),
+  }),
+])
+type PiEvent = typeof PiEvent.Type
+const decodePiEvent = S.decodeUnknownOption(S.fromJsonString(PiEvent))
+const ToolArgs = S.Struct({ path: S.optional(S.String), pattern: S.optional(S.String) })
+const decodeToolArgs = S.decodeUnknownOption(ToolArgs)
+
+const textOf = (content: ReadonlyArray<{ readonly type: string }> | string | undefined): string =>
+  typeof content === 'string'
+    ? content
+    : (content ?? [])
+        .map(block => ('text' in block && typeof block.text === 'string' ? block.text : ''))
+        .join('')
+        .trim()
+
+/** What a tool worked on, short: paths relative to the stage or the
+ *  repository. */
+const targetOf = (args: unknown, roots: ReadonlyArray<string>): string => {
+  const decoded = decodeToolArgs(args)
+  if (Option.isNone(decoded)) return ''
+  const short = (path: string) => {
+    const slashed = path.split('\\').join('/')
+    for (const root of roots) {
+      const prefix = `${root.split('\\').join('/')}/`
+      if (slashed.toLowerCase().startsWith(prefix.toLowerCase())) return slashed.slice(prefix.length)
+    }
+    return slashed
+  }
+  const { path, pattern } = decoded.value
+  if (pattern !== undefined) return path === undefined ? pattern : `${pattern} in ${short(path)}`
+  return path === undefined ? '' : short(path)
+}
+
+/** What became of the run a follow-up carries on from, for the agent. */
+const OUTCOME: Readonly<Record<RunState, string>> = {
+  queued: 'did not run',
+  working: 'did not finish',
+  checking: 'did not finish',
+  review: 'waits for review and is not live',
+  installing: 'did not finish installing',
+  installed: 'went live',
+  unchanged: 'changed nothing',
+  failed: 'failed, so nothing of it went live',
+  rejected: 'was rejected by a reviewer, so nothing of it went live',
+  undone: 'went live and was undone since',
+}
+
+/** pi's session file in a run's folder, if it has one. */
+const sessionFileOf = (runDirectory: string) =>
+  Effect.promise(async () => {
+    const folder = join(runDirectory, 'pi')
+    const files = await readdir(folder).catch((): Array<string> => [])
+    const found = files.filter(file => file.endsWith('.jsonl')).sort().at(-1)
+    return found === undefined ? null : join(folder, found)
+  })
+
 /** What an extension in its own process may use of the app's services,
  *  as a sentence for the agent (src/app/remote.ts). */
 const sharedMembers = () =>
@@ -195,24 +324,69 @@ export const piAgent = (options: PiOptions): Agent => {
   return { work: task => work(options, credentials, task) }
 }
 
-const work = (options: PiOptions, credentials: Credentials, { prompt, stage, runDirectory, feedback, guide }: Task) =>
+const work = (options: PiOptions, credentials: Credentials, { prompt, stage, runDirectory, feedback, guide, previous, report }: Task) =>
   Effect.gen(function* () {
     // The rules, then what the app has now (made by the app at the run's start).
     const instructionsFile = join(runDirectory, 'instructions.md')
     const text = instructions(options.appDirectory, options.repository) + (guide === null ? '' : `\n${guide}`)
     yield* Effect.promise(() => writeFile(instructionsFile, text))
+    // A follow-up's first attempt forks the session of the run before it.
+    const fork = previous !== null && feedback === null ? yield* sessionFileOf(previous.runDirectory) : null
     const message =
-      feedback === null
-        ? prompt
-        : `Your change did not go live. Fix it; here is what failed:\n\n${feedback}`
+      feedback !== null
+        ? `Your change did not go live. Fix it; here is what failed:\n\n${feedback}`
+        : previous === null
+          ? prompt
+          : [
+              `This follows up your earlier change ("${previous.prompt}"), which ${OUTCOME[previous.state]}.`,
+              `The current directory is a new copy of the app's extensions as they are now${previous.state === 'installed' ? ', with that change' : ''}.`,
+              '',
+              prompt,
+            ].join('\n')
     const cli = yield* Effect.try({ try: piCli, catch: error => fail(`pi was not found: ${String(error)}`) })
     const guard: Guard = { stage, read: [options.repository], hidden: HIDDEN }
-    const pi = runNode(
+    let answer = ''
+    let failure: string | null = null
+    const roots = [stage, options.repository]
+    // The end of a tool call does not repeat what it worked on.
+    const targets = new Map<string, string>()
+    const onEvent = (event: PiEvent): Effect.Effect<void> => {
+      switch (event.type) {
+        case 'tool_execution_start': {
+          const target = targetOf(event.args, roots)
+          targets.set(event.toolCallId, target)
+          return report({ _tag: 'Tool', id: event.toolCallId, name: event.toolName, target, state: 'running', detail: null })
+        }
+        case 'tool_execution_end': {
+          const tool: AgentEvent = {
+            _tag: 'Tool',
+            id: event.toolCallId,
+            name: event.toolName,
+            target: targets.get(event.toolCallId) ?? '',
+            state: event.isError ? 'failed' : 'done',
+            detail: event.isError ? textOf(event.result?.content).slice(0, 600) : null,
+          }
+          return report(tool)
+        }
+        case 'message_end': {
+          if (event.message.role !== 'assistant') return Effect.void
+          if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') {
+            failure = event.message.errorMessage ?? 'pi stopped.'
+          }
+          const said = textOf(event.message.content)
+          if (said === '') return Effect.void
+          answer = said
+          return report({ _tag: 'Said', text: said })
+        }
+      }
+    }
+    const pi = runNodeLines(
       [
         cli,
-        '--print',
+        '--mode', 'json',
         '--no-approve',
         '--session-dir', join(runDirectory, 'pi'),
+        ...(fork === null ? [] : ['--fork', fork]),
         '--session-id', 'run',
         '--provider', 'openai-codex',
         '--model', process.env['JELLYWARE_MODEL'] ?? 'gpt-6.1-sol',
@@ -230,9 +404,19 @@ const work = (options: PiOptions, credentials: Credentials, { prompt, stage, run
         env: { ...process.env, PI_CODING_AGENT_DIR: options.agentDirectory, JELLYWARE_GUARD: JSON.stringify(guard) },
         timeoutMs: 20 * 60 * 1000,
       },
+      line => {
+        const event = decodePiEvent(line)
+        return Option.isSome(event) ? onEvent(event.value) : Effect.void
+      },
     ).pipe(
-      Effect.map(output => output.trim()),
       Effect.mapError(output => fail(`pi stopped: ${output}`)),
+      Effect.flatMap(() =>
+        failure !== null && answer === ''
+          ? Effect.fail(fail(`pi stopped: ${failure}`))
+          : answer === ''
+            ? Effect.fail(fail('pi ended without an answer.'))
+            : Effect.succeed(answer),
+      ),
     )
     // The token exists only while a pi runs.
     return yield* Effect.acquireUseRelease(credentials.acquire, () => pi, () => credentials.release)
@@ -327,17 +511,23 @@ export const extensionTests = (appDirectory: string): Check => ({
  *  `replace <file> :: <old> => <new>` replaces text in a stage file. Its
  *  answer names the file's extension as changed. */
 export const scriptAgent: Agent = {
-  work: ({ prompt, stage }) =>
+  work: ({ prompt, stage, report }) =>
     Effect.gen(function* () {
+      const answer = (text: string) => Effect.as(report({ _tag: 'Said', text }), text)
       const match = /^replace (\S+) :: ([\s\S]+?) => ([\s\S]*)$/.exec(prompt.trim())
-      if (match === null) return 'The script agent only knows `replace <file> :: <old> => <new>`.\nChanged: none'
+      if (match === null) return yield* answer('The script agent only knows `replace <file> :: <old> => <new>`.\nChanged: none')
       const [, file = '', from = '', to = ''] = match
       const path = resolve(stage, file)
       if (!path.startsWith(resolve(stage))) return yield* Effect.fail(fail('The file must be in the stage.'))
       const changed = `Changed: ${file.split('/')[0] ?? ''}`
+      yield* report({ _tag: 'Tool', id: 'edit', name: 'edit', target: file, state: 'running', detail: null })
       const text = yield* Effect.tryPromise({ try: () => readFile(path, 'utf8'), catch: () => fail(`No file ${file}.`) })
-      if (!text.includes(from)) return `${file} does not contain the text to replace.\n${changed}`
+      if (!text.includes(from)) {
+        yield* report({ _tag: 'Tool', id: 'edit', name: 'edit', target: file, state: 'failed', detail: 'The text to replace is not in the file.' })
+        return yield* answer(`${file} does not contain the text to replace.\n${changed}`)
+      }
       yield* Effect.promise(() => writeFile(path, text.split(from).join(to)))
-      return `Replaced the text in ${file}.\n${changed}`
+      yield* report({ _tag: 'Tool', id: 'edit', name: 'edit', target: file, state: 'done', detail: null })
+      return yield* answer(`Replaced the text in ${file}.\n${changed}`)
     }),
 }

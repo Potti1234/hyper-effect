@@ -12,15 +12,17 @@ import { chromium } from 'playwright'
    page shows the sidebar.
 
    Then the slots of the issue lists (badges from extensions/stale, palette
-   entries from extensions/related and extensions/standup), "What you can
-   customize" on /extensions, and roles there: Ada administers, Grace only
-   looks until Ada gives her the role.
+   entries from extensions/related and extensions/standup), the sections of
+   /extensions ("Customize", roles under "People": Ada administers, Grace
+   only looks until Ada gives her the role), and an extension turned off and
+   on.
 
-   The last part changes the app by prompt on /extensions: a run waits for
-   review, Ada reads the diff and approves it; a change that fails the
-   typecheck or the extension's own tests fails. It needs the server started
-   with JELLYWARE_AGENT=script (a scripted agent instead of pi); without
-   it, that part is skipped.
+   The last part changes the app by prompt in /extensions/chat: the chat
+   shows what the agent did and the checks, a run waits for review, Ada
+   reads the diff and approves it, a follow-up stays in its conversation; a
+   change that fails the typecheck or the extension's own tests fails. It
+   needs the server started with JELLYWARE_AGENT=script (a scripted agent
+   instead of pi); without it, that part is skipped.
 
    It edits extensions/standup/ and puts the files back when it ends.
 
@@ -306,9 +308,16 @@ try {
   await ada.page.getByRole('option', { name: 'Open Stand-up' }).click()
   check('the link opens its page', await until(ada.page, () => location.pathname === '/standup'))
 
-  // WHAT YOU CAN CUSTOMIZE
+  // THE SECTIONS OF /extensions, AND WHAT YOU CAN CUSTOMIZE
   await ada.page.goto(`${base}/extensions`)
-  await ada.page.waitForSelector('#workshop-customize')
+  await ada.page.waitForSelector('#workshop-extensions')
+  await ada.page.evaluate(() => {
+    window.__sameDocument = true
+  })
+  check('and what each extension adds', (await ada.page.textContent('#extension-adds-stale')).includes('badges on issues'))
+  await ada.page.click('#section-customize')
+  check('a section opens from the second sidebar', await until(ada.page, () => document.querySelector('#workshop-customize') !== null && location.pathname === '/extensions/customize'))
+  check('within the session', await ada.page.evaluate(() => window.__sameDocument === true))
   await ada.page.waitForTimeout(300)
   check('the workshop lists every place an extension can change', (await ada.page.locator('#workshop-customize > ul > li').count()) === 5)
   check(
@@ -316,39 +325,74 @@ try {
     (await ada.page.textContent('#customize-issues-badges')).includes('Stale issues') &&
       (await ada.page.textContent('#customize-issues-palette')).includes('Related issues'),
   )
-  check('and what each extension adds', (await ada.page.textContent('#extension-adds-stale')).includes('badges on issues'))
   await ada.page.click('#try-issues-badges')
-  check('an example fills the prompt', await until(ada.page, () => document.querySelector('#workshop-prompt')?.value.includes('Overdue') === true))
+  check(
+    'an example opens a new conversation with it',
+    await until(ada.page, () => location.pathname === '/extensions/chat' && document.querySelector('#workshop-prompt')?.value.includes('Overdue') === true),
+  )
   await ada.page.fill('#workshop-prompt', '')
+  await ada.page.goBack()
+  check('back goes to the section before', await until(ada.page, () => document.querySelector('#workshop-customize') !== null))
 
   // ROLES
-  await grace.page.goto(`${base}/extensions`)
-  await grace.page.waitForSelector('#workshop-members')
+  await grace.page.goto(`${base}/extensions/chat`)
+  await grace.page.waitForSelector('#workshop-form')
   check(
     'a member sees who may change the app, and no prompt',
     (await grace.page.textContent('#workshop-form')).includes('Only administrators') && (await grace.page.locator('#workshop-prompt').count()) === 0,
   )
-  check('nor settings buttons', (await grace.page.locator('#workshop-extensions button[id^="settings-"]').count()) === 0)
+  await grace.page.goto(`${base}/extensions`)
+  await grace.page.waitForSelector('#workshop-extensions')
+  check(
+    'nor settings buttons, nor switches',
+    (await grace.page.locator('#workshop-extensions button[id^="settings-"], #workshop-extensions [id^="toggle-"]').count()) === 0,
+  )
+  await grace.page.goto(`${base}/extensions/customize`)
+  await grace.page.waitForSelector('#workshop-customize')
   check('nor examples to try', (await grace.page.locator('#workshop-customize button').count()) === 0)
-  await ada.page.goto(`${base}/extensions`)
+  await grace.page.goto(`${base}/extensions/chat`)
+  await grace.page.waitForSelector('#workshop-form')
+  await ada.page.goto(`${base}/extensions/people`)
   await ada.page.waitForSelector('#role-grace')
   await ada.page.click('#role-grace')
   check('an administrator gives the role, and the member’s open page follows', await until(grace.page, () => document.querySelector('#workshop-prompt') !== null))
+  await grace.page.click('#section-extensions')
   check('with the settings buttons', await until(grace.page, () => document.querySelector('#settings-related') !== null))
   await ada.page.click('#role-grace')
-  check('and takes it back', await until(grace.page, () => document.querySelector('#workshop-prompt') === null))
+  check('and takes it back', await until(grace.page, () => document.querySelector('#settings-related') === null))
+
+  // TURNING AN EXTENSION OFF AND ON
+  await grace.page.goto(`${base}/team/ENG`)
+  await grace.page.waitForSelector('#sidebar a[href="/standup"]')
+  await ada.page.goto(`${base}/extensions`)
+  await ada.page.waitForSelector('#toggle-standup')
+  await ada.page.click('#toggle-standup')
+  check('turning an extension off unloads it', await until(ada.page, () => document.querySelector('#extension-standup')?.dataset.state === 'disabled'))
+  check('its entry leaves another person’s open page', await until(grace.page, () => document.querySelector('#sidebar a[href="/standup"]') === null))
+  const off = await fetch(`${base}/standup`, { redirect: 'manual' })
+  check('and its page is gone', off.status === 404 || off.status === 303, `status ${off.status}`)
+  await ada.page.click('#toggle-standup')
+  check('turning it on loads it again', await until(ada.page, () => document.querySelector('#extension-standup')?.dataset.state === 'active'))
+  check('and its entry comes back', await until(grace.page, () => document.querySelector('#sidebar a[href="/standup"]') !== null))
 
   // CHANGES BY PROMPT
   if (process.env.JELLYWARE_AGENT === 'script') {
     await ada.page.goto(`${base}/extensions`)
     await ada.page.waitForSelector('#workshop-extensions')
     check('the workshop lists the loaded extension', await until(ada.page, () => document.querySelector('#extension-standup')?.dataset.state === 'active'))
-    const prompt = async text => {
-      const before = await ada.page.locator('#workshop-runs article').count()
+    /** Sends a message in Chat: a new conversation, or (`followUp`) one
+     *  in the conversation open now. */
+    const prompt = async (text, followUp = false) => {
+      if (!followUp) {
+        await ada.page.goto(`${base}/extensions/chat`)
+        await ada.page.waitForSelector('#workshop-prompt')
+        await ada.page.waitForTimeout(300)
+      }
+      const before = await ada.page.locator('#workshop-chat article').count()
       await ada.page.fill('#workshop-prompt', text)
       await ada.page.click('#workshop-submit')
-      await ada.page.waitForFunction(count => document.querySelectorAll('#workshop-runs article').length > count, before, { timeout: TIMEOUT })
-      const id = await ada.page.evaluate(() => document.querySelector('#workshop-runs article').id)
+      await ada.page.waitForFunction(count => document.querySelectorAll('#workshop-chat article').length > count, before, { timeout: TIMEOUT })
+      const id = await ada.page.evaluate(() => [...document.querySelectorAll('#workshop-chat article')].at(-1).id)
       await ada.page.waitForFunction(
         selector => ['review', 'installed', 'failed', 'unchanged'].includes(document.querySelector(selector)?.dataset.state),
         `#${id}`,
@@ -359,6 +403,17 @@ try {
     const daily = await prompt("replace standup/extension.ts :: label: 'Stand-up' => label: 'Daily'")
     check('a checked prompt waits for review', daily.state === 'review', daily.state)
     const runId = daily.id.slice(4)
+    check('the conversation has its own address', await ada.page.evaluate(id => location.pathname === `/extensions/chat/${id}`, runId))
+    check(
+      'the chat shows the tool the agent called',
+      (await ada.page.locator(`#${daily.id} [data-tool="edit"][data-state="done"]`).count()) === 1 && daily.text.includes('standup/extension.ts'),
+    )
+    check(
+      'and each check, passed',
+      ['Manifests and credentials', 'Imports', 'Typecheck', 'Tests'].every(name => daily.text.includes(name)) &&
+        (await ada.page.locator(`#${daily.id} [data-step^="check-"][data-state="failed"]`).count()) === 0,
+    )
+    check('and what the agent said, without its Changed: line', daily.text.includes('Replaced the text') && !daily.text.includes('Changed: standup'))
     check(
       'with the diff of what it changes',
       await until(
@@ -378,7 +433,11 @@ try {
     await ada.page.click(`#undo-${runId}`)
     check('undo takes it back', await until(ada.page, selector => document.querySelector(selector)?.dataset.state === 'undone', `#${daily.id}`))
     check('on the other person’s page too', await until(grace.page, () => [...document.querySelectorAll('#sidebar a')].some(link => link.textContent === 'Stand-up')))
-    const rejected = await prompt("replace standup/extension.ts :: label: 'Stand-up' => label: 'Never'")
+    const rejected = await prompt("replace standup/extension.ts :: label: 'Stand-up' => label: 'Never'", true)
+    check(
+      'a follow-up stays in its conversation',
+      (await ada.page.locator('#workshop-chat article').count()) === 2 && (await ada.page.evaluate(id => location.pathname === `/extensions/chat/${id}`, runId)),
+    )
     await ada.page.click(`#reject-${rejected.id.slice(4)}`)
     check('a rejected run changes nothing', await until(ada.page, selector => document.querySelector(selector)?.dataset.state === 'rejected', `#${rejected.id}`))
     check('and stays out of the sidebar', ![...(await grace.page.$$eval('#sidebar a', links => links.map(link => link.textContent)))].includes('Never'))
@@ -397,6 +456,13 @@ try {
       'a change its extension’s own tests reject fails, with the failing test',
       untested.state === 'failed' && untested.text.includes('Tests failed') && untested.text.includes("expected 'Old"),
       untested.state,
+    )
+    check('the chat shows the attempts the agent made', untested.text.includes('attempt 3') && (await ada.page.locator(`#${untested.id} [data-step^="retry-"]`).count()) === 2)
+    await ada.page.click('#section-changes')
+    await ada.page.waitForSelector('#workshop-runs')
+    check(
+      'Changes lists every run, with its conversation',
+      (await ada.page.getAttribute(`#${daily.id}`, 'data-state')) === 'undone' && (await ada.page.locator(`#open-chat-${runId}`).count()) === 1,
     )
   } else {
     console.log('SKIP changes by prompt (start the server with JELLYWARE_AGENT=script)')
