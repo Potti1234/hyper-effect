@@ -36,9 +36,21 @@ export const runIsland = <Props, Event>(
 ): void => {
   const decodeProps = Schema.decodeUnknownSync(Schema.toCodecJson(spec.Props))
   const send = (message: FromFrame) => window.parent.postMessage(message, '*')
-  const fail = (error: unknown) => send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+  let failed = false
+  const fail = (error: unknown) => {
+    if (failed) return
+    failed = true
+    send({ type: 'error', message: (error instanceof Error ? error.message : String(error)).slice(0, 1000) })
+  }
   window.addEventListener('error', event => fail(event.error ?? event.message))
   window.addEventListener('unhandledrejection', event => fail(event.reason))
+  // Foldkit catches a crash of the program (a failed update, a Command that
+  // dies) and only logs it: report that too.
+  const log = console.error.bind(console)
+  console.error = (...args: ReadonlyArray<unknown>) => {
+    if (typeof args[0] === 'string' && args[0].startsWith('[foldkit] Application crash')) fail(args[1] ?? args[0])
+    log(...args)
+  }
 
   let handle: Handle | undefined
   window.addEventListener('message', event => {

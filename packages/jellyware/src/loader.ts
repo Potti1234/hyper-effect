@@ -118,6 +118,9 @@ export const ExtensionStatus = S.Struct({
   data: S.NullOr(DataSummary).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
   /** The names of its islands (browser code in sandboxed frames). */
   islands: S.Array(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed([]))),
+  /** The last failure of one of its islands in a browser, for this
+   *  version: "board: Schema validation failed". */
+  islandError: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
   error: S.NullOr(S.String),
   /** The declared settings with the values in effect. */
   settings: S.Array(SettingField),
@@ -180,6 +183,9 @@ export class Extensions extends Context.Service<
     /** The code of an island as built for a version (by the hash in its
      *  frame's address), for the route that serves frames. */
     readonly islandCode: (id: string, name: string, hash: string) => Effect.Effect<Option.Option<string>>
+    /** Records that an island failed in a browser (shown with the
+     *  extension until its next version). */
+    readonly reportIslandError: (id: string, name: string, message: string) => Effect.Effect<void>
   }
 >()('@hyper-effect/jellyware/Extensions') {}
 
@@ -435,6 +441,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
               isolated: options.isolation !== undefined,
               data: summary !== null && (summary.migrations > 0 || summary.tables.length > 0) ? summary : null,
               islands: Object.keys(manifest.islands ?? {}),
+              islandError: null,
               settings: fieldsOf(specs, values),
               state: 'disabled',
               running: null,
@@ -459,6 +466,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
             isolated: options.isolation !== undefined,
             data: data !== null && (data.migrations > 0 || data.tables.length > 0) ? data : null,
             islands: Object.keys(manifest.islands ?? {}),
+            islandError: null,
             settings: fieldsOf(specs, values),
           }
           const runningNow = () => running.get(id)?.generation ?? null
@@ -586,6 +594,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
                 isolated: options.isolation !== undefined,
                 data: known?.data ?? null,
                 islands: known?.islands ?? [],
+                islandError: known?.islandError ?? null,
                 state: 'failed',
                 running: running.get(id)?.generation ?? null,
                 error: error.message,
@@ -794,6 +803,13 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
             yield* writeMemberValues(id, { ...current, [memberId]: { ...ownValues(specs, current[memberId] ?? {}), ...parsed.values } })
           }),
         islandCode: (id, name, hash) => Effect.sync(() => Option.fromNullishOr(islandCode.get(`${id}/${name}/${hash}`))),
+        reportIslandError: (id, name, message) =>
+          Effect.gen(function* () {
+            yield* Effect.logWarning(`jellyware: ${id}: the island ${name} failed in a browser: ${message}`)
+            yield* SubscriptionRef.update(statuses, list =>
+              list.map(status => (status.id === id && status.islands.includes(name) ? { ...status, islandError: `${name}: ${message}` } : status)),
+            )
+          }),
         setEnabled: (id, enabled) =>
           settingsLock.withPermits(1)(
             Effect.gen(function* () {

@@ -117,6 +117,31 @@ export const frameRoute = <E, R>(
     }),
   )
 
+/** The route a page reports an island's failure to (the host posts the
+ *  message): only for an island that was built, only from the app's own
+ *  pages, and short. */
+export const errorRoute = <E, R>(
+  options: Readonly<{
+    codeOf: (extension: string, name: string, hash: string) => Effect.Effect<Option.Option<string>, E, R>
+    report: (extension: string, name: string, message: string) => Effect.Effect<void, E, R>
+  }>,
+) =>
+  HttpRouter.add(
+    'POST',
+    '/_jellyware/islands/:extension/:name/:hash/error',
+    Effect.gen(function* () {
+      const { extension = '', name = '', hash = '' } = yield* HttpRouter.params
+      const request = yield* HttpServerRequest.HttpServerRequest
+      if (request.headers['sec-fetch-site'] !== undefined && request.headers['sec-fetch-site'] !== 'same-origin') {
+        return HttpServerResponse.text('Not from this app.', { status: 403 })
+      }
+      if (Option.isNone(yield* options.codeOf(extension, name, hash))) return HttpServerResponse.text('No such island.', { status: 404 })
+      const text = yield* request.text.pipe(Effect.orElseSucceed(() => ''))
+      yield* options.report(extension, name, text.slice(0, 1000) || 'The island failed.')
+      return HttpServerResponse.empty({ status: 204 })
+    }),
+  )
+
 /** Where an island's entry is: in the extension's folder, never outside. */
 export const entryOf = (folder: string, path: string): string | null => {
   const normalized = path.replace(/\\/g, '/')

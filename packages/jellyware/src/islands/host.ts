@@ -64,8 +64,29 @@ export const registerIslandHost = (): void => {
           if (this.#hosted?.height === null) this.#frame.style.height = `${Math.max(24, Math.min(MAX_FRAME_HEIGHT, message.height))}px`
           return
         case 'error':
-          this.setAttribute('data-island-error', message.message)
+          this.#failed(message.message)
           return
+      }
+    }
+
+    /** The island failed: say so where it was, and tell the server, which
+     *  shows it with the extension. */
+    #failed(text: string) {
+      if (this.hasAttribute('data-island-error')) return
+      this.setAttribute('data-island-error', text)
+      const frame = this.#frame
+      if (frame !== undefined) {
+        frame.style.display = 'none'
+        const note = document.createElement('div')
+        note.setAttribute('role', 'alert')
+        note.setAttribute('data-island-failed', '')
+        note.className = 'rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-[12px] text-destructive'
+        note.textContent = `This part of the page failed: ${text}`
+        frame.after(note)
+      }
+      const src = this.#hosted?.src
+      if (src !== undefined) {
+        void fetch(`${src}/error`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'text/plain' }, body: text.slice(0, 1000) }).catch(() => undefined)
       }
     }
 
@@ -74,6 +95,8 @@ export const registerIslandHost = (): void => {
       if (frame === undefined) return
       this.#ready = false
       this.removeAttribute('data-island-error')
+      this.querySelector('[data-island-failed]')?.remove()
+      frame.style.display = 'block'
       frame.title = hosted.label
       frame.style.height = `${hosted.height ?? 120}px`
       frame.src = hosted.src
