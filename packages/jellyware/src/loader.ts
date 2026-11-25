@@ -12,6 +12,7 @@ import {
   Effect,
   Exit,
   Layer,
+  Option,
   Queue,
   type Redacted,
   Schema as S,
@@ -28,6 +29,8 @@ import { PageOwner } from '@hyper-effect/core'
 import { CurrentExtension } from './contributions.ts'
 import { DataError, type Database, DataSummary, ExtensionData, applyMigrations, makeData, openDatabase, summarize } from './data.ts'
 import * as Graft from './graft.ts'
+import { buildIsland, entryOf, frameSrc } from './islands/build.ts'
+import { ExtensionIslands } from './islands/view.ts'
 import { type IsolationOptions, isolatedExtension } from './isolation/parent.ts'
 import { decrypt, encrypt, isStoredSecret, maskSecret } from './secrets.ts'
 import {
@@ -91,6 +94,9 @@ export const Manifest = S.Struct({
   settings: S.optional(S.Record(S.String, SettingSpec)),
   /** The SQL statements that make its tables, append-only (data.ts). */
   migrations: S.optional(S.Array(S.String)),
+  /** Its own browser code: islands by name, each an entry module in its
+   *  folder (islands/build.ts). */
+  islands: S.optional(S.Record(S.String, S.String)),
 })
 export type Manifest = typeof Manifest.Type
 
@@ -110,6 +116,8 @@ export const ExtensionStatus = S.Struct({
   isolated: S.Boolean.pipe(S.withDecodingDefaultKey(Effect.succeed(false))),
   /** Its database's tables, when it has any. */
   data: S.NullOr(DataSummary).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
+  /** The names of its islands (browser code in sandboxed frames). */
+  islands: S.Array(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed([]))),
   error: S.NullOr(S.String),
   /** The declared settings with the values in effect. */
   settings: S.Array(SettingField),
@@ -169,6 +177,9 @@ export class Extensions extends Context.Service<
      *  (loads it again); fails with a line for the member when there is no
      *  such extension. */
     readonly setEnabled: (id: string, enabled: boolean) => Effect.Effect<void, string>
+    /** The code of an island as built for a version (by the hash in its
+     *  frame's address), for the route that serves frames. */
+    readonly islandCode: (id: string, name: string, hash: string) => Effect.Effect<Option.Option<string>>
   }
 >()('@hyper-effect/jellyware/Extensions') {}
 
@@ -222,6 +233,8 @@ export type Options<Requires extends ReadonlyArray<Graft.Requirement>> = Readonl
   /** Where each extension's database is kept (data.ts); without it,
    *  extensions with migrations do not load. */
   dataDirectory?: string
+  /** The tsconfig for path aliases in islands' code. */
+  islandTsconfig?: string
 }>
 
 /** The member settings of one extension as one member has them: `fields`
@@ -271,8 +284,12 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
        *  settings. */
       const isExtensionLayer = (
         value: unknown,
-      ): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires> | ExtensionSettings | ExtensionData | Graft.Mounting> =>
+      ): value is Layer.Layer<unknown, unknown, Graft.Provided<Requires> | ExtensionSettings | ExtensionData | ExtensionIslands | Graft.Mounting> =>
         Layer.isLayer(value)
+
+      // Islands' code by `<id>/<name>/<hash>`: every version built while the
+      // server runs, so a page that still shows an older one keeps working.
+      const islandCode = new Map<string, string>()
 
       // Each extension's database, open for the life of the loader.
       const databases = new Map<string, Database>()
@@ -417,6 +434,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
               description: manifest.description ?? null,
               isolated: options.isolation !== undefined,
               data: summary !== null && (summary.migrations > 0 || summary.tables.length > 0) ? summary : null,
+              islands: Object.keys(manifest.islands ?? {}),
               settings: fieldsOf(specs, values),
               state: 'disabled',
               running: null,
@@ -440,6 +458,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
             description: manifest.description ?? null,
             isolated: options.isolation !== undefined,
             data: data !== null && (data.migrations > 0 || data.tables.length > 0) ? data : null,
+            islands: Object.keys(manifest.islands ?? {}),
             settings: fieldsOf(specs, values),
           }
           const runningNow = () => running.get(id)?.generation ?? null
@@ -457,6 +476,27 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           }
           yield* setStatus({ ...base, state: 'loading', running: runningNow(), error: null })
 
+          // Its islands, built for this version; one that does not build
+          // stops the load.
+          const islands: Record<string, string> = {}
+          for (const [name, path] of Object.entries(manifest.islands ?? {})) {
+            const entry = entryOf(folder, path)
+            if (entry === null) return yield* new LoadError({ message: `extension.json: the island "${name}" must be a file in the extension's folder.` })
+            const built = yield* buildIsland(entry, options.islandTsconfig === undefined ? {} : { tsconfig: options.islandTsconfig }).pipe(
+              Effect.mapError(error => new LoadError({ message: `The island "${name}" (${path}) did not build:\n${error.message}` })),
+            )
+            islandCode.set(`${id}/${name}/${built.hash}`, built.code)
+            islands[name] = frameSrc(id, name, built.hash)
+          }
+          const islandsService = ExtensionIslands.of({
+            src: name => {
+              const src = islands[name]
+              return src === undefined
+                ? Effect.die(new Error(`There is no island "${name}": extension.json declares ${Object.keys(islands).join(', ') || 'none'}.`))
+                : Effect.succeed(src)
+            },
+          })
+
           const generation = (generations.get(folderUrl(folder)) ?? 0) + 1
           generations.set(folderUrl(folder), generation)
           // Its settings (secrets opened; member values read while it runs).
@@ -466,7 +506,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
           // into this one under a new generation.
           const extension = yield* options.isolation !== undefined
             ? Effect.succeed(
-                isolatedExtension({ id, entry: join(folder, manifest.entry), values: plain, secrets, options: options.isolation }),
+                isolatedExtension({ id, entry: join(folder, manifest.entry), values: plain, secrets, islands, options: options.isolation }),
               )
             : Effect.gen(function* () {
                 const entry = `${pathToFileURL(join(folder, manifest.entry)).href}?jellyware=${generation}`
@@ -493,6 +533,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
               Layer.mergeAll(
                 Layer.succeed(ExtensionSettings, makeSettings(plain, secrets, forMember)),
                 Layer.succeed(ExtensionData, database === null ? noData : makeData(database)),
+                Layer.succeed(ExtensionIslands, islandsService),
                 Layer.succeed(CurrentExtension, id),
                 Layer.succeed(PageOwner, id),
               ),
@@ -544,6 +585,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
                 description: known?.description ?? null,
                 isolated: options.isolation !== undefined,
                 data: known?.data ?? null,
+                islands: known?.islands ?? [],
                 state: 'failed',
                 running: running.get(id)?.generation ?? null,
                 error: error.message,
@@ -751,6 +793,7 @@ export const layer = <const Requires extends ReadonlyArray<Graft.Requirement>>(
             const current = (yield* SubscriptionRef.get(memberValues))[id] ?? {}
             yield* writeMemberValues(id, { ...current, [memberId]: { ...ownValues(specs, current[memberId] ?? {}), ...parsed.values } })
           }),
+        islandCode: (id, name, hash) => Effect.sync(() => Option.fromNullishOr(islandCode.get(`${id}/${name}/${hash}`))),
         setEnabled: (id, enabled) =>
           settingsLock.withPermits(1)(
             Effect.gen(function* () {

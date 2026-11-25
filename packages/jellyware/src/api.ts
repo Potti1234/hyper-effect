@@ -23,6 +23,8 @@ export {
   SlotItem,
 } from './contributions.ts'
 export { DataError, ExtensionData, type Row, type SqlValue } from './data.ts'
+export { type IslandSpec, defineIsland, islandPorts } from './islands/contract.ts'
+export { ExtensionIslands, type IslandViewConfig, islandView } from './islands/view.ts'
 export { ExtensionSettings, SettingField, SettingSpec, type SettingValue, type SettingValues, isMemberSetting } from './settings.ts'
 export type { Provided, Requirement } from './graft.ts'
 export { type MemberKind, type RemoteService, remoteService } from './isolation/remote.ts'

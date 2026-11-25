@@ -67,6 +67,9 @@ export type IsolationOptions = Readonly<{
 
 const CHILD_RUNTIME = fileURLToPath(new URL('./child.ts', import.meta.url))
 const EXTENSION_API = fileURLToPath(new URL('../api.ts', import.meta.url))
+/** The browser side of islands, which an extension's island contract
+ *  imports (the alias above would map it under api.ts). */
+const ISLAND_BROWSER = fileURLToPath(new URL('../islands/browser.ts', import.meta.url))
 /** What Node needs from the environment on every platform. */
 const BASE_ENVIRONMENT = ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']
 
@@ -103,7 +106,7 @@ const bundle = (entry: string, servicesModule: string, outfile: string, tsconfig
         outfile,
         ...(tsconfig === undefined ? {} : { tsconfig }),
         // Extensions import the registry and settings only, not the loader.
-        alias: { '@hyper-effect/jellyware': EXTENSION_API },
+        alias: { '@hyper-effect/jellyware/island': ISLAND_BROWSER, '@hyper-effect/jellyware': EXTENSION_API },
         logLevel: 'silent',
         banner: {
           js: "import { createRequire as __jellywareRequire } from 'node:module'; const require = __jellywareRequire(import.meta.url); const __filename = import.meta.filename; const __dirname = import.meta.dirname;",
@@ -208,6 +211,8 @@ export const isolatedExtension = (
     /** Its settings: values, and secrets in the clear. */
     values: Readonly<Record<string, SettingValue>>
     secrets: Readonly<Record<string, string>>
+    /** Its islands' frame addresses, by name. */
+    islands: Readonly<Record<string, string>>
     options: IsolationOptions
   }>,
 ) =>
@@ -426,7 +431,7 @@ export const isolatedExtension = (
         // A process that already ended is stopped too.
         peer.call('stop').pipe(Effect.timeoutOption('3 seconds'), Effect.catchCause(() => Effect.void)),
       )
-      yield* peer.call('start', [{ id, values: input.values, secrets: input.secrets }]).pipe(
+      yield* peer.call('start', [{ id, values: input.values, secrets: input.secrets, islands: input.islands }]).pipe(
         Effect.mapError(error => (typeof error === 'string' ? error : JSON.stringify(error))),
         Effect.catchDefect(defect => Effect.fail(`The extension's process failed: ${String(defect)}`)),
       )

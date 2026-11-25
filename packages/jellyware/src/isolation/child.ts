@@ -6,6 +6,7 @@ import { PageHost, StylesheetChanges, servedPage } from '@hyper-effect/core'
 
 import { type BadgeEntry, type CommandEntry, Contributions, Inventory, NavEntry, SlotBadge, SlotCard, type SlotEntry } from '../contributions.ts'
 import { DataError, ExtensionData, SqlValueSchema } from '../data.ts'
+import { ExtensionIslands } from '../islands/view.ts'
 import { ExtensionSettings, type SettingValues, valuesOf } from '../settings.ts'
 import { type Handler, type Peer, decodeOrDie, make } from './bridge.ts'
 import type { RemoteService } from './remote.ts'
@@ -32,6 +33,8 @@ const Start = S.Struct({
   id: S.String,
   values: S.Record(S.String, S.Union([S.String, S.Number, S.Boolean])),
   secrets: S.Record(S.String, S.String),
+  /** Its islands' frame addresses, by name. */
+  islands: S.Record(S.String, S.String),
 })
 
 const HttpRequest = S.Struct({
@@ -257,6 +260,17 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
                   peer.call('data.query', [sql, params]).pipe(Effect.mapError(dataError), Effect.flatMap(decodeOrDie(Rows))),
                 run: (sql, params = []) => peer.call('data.run', [sql, params]).pipe(Effect.mapError(dataError), Effect.map(Number)),
                 changes: peer.stream('data.changes').pipe(Stream.orDie, Stream.map(Number)),
+              }),
+            ),
+            Context.add(
+              ExtensionIslands,
+              ExtensionIslands.of({
+                src: name => {
+                  const src = start.islands[name]
+                  return src === undefined
+                    ? Effect.die(new Error(`There is no island "${name}": extension.json declares ${Object.keys(start.islands).join(', ') || 'none'}.`))
+                    : Effect.succeed(src)
+                },
               }),
             ),
             Context.add(StylesheetChanges, peer.stream('styles').pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(S.String))))),

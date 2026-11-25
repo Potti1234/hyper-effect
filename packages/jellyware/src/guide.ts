@@ -138,6 +138,7 @@ export const renderGuide = (input: GuideInput): string => {
     ]
     lines.push(`- Adds: ${adds.length === 0 ? (extension.state === 'active' ? 'nothing the app lists' : 'nothing while it does not run') : adds.join('; ')}.`)
     if (extension.settings.length > 0) lines.push(`- Settings: ${extension.settings.map(describeSetting).join('; ')}.`)
+    if (extension.islands.length > 0) lines.push(`- Islands (its own browser code, in sandboxed frames): ${extension.islands.map(code).join(', ')}.`)
     if (extension.data !== null) {
       lines.push(
         `- Data: ${extension.data.tables.map(table => `table ${code(table.name)} (${table.columns.join(', ')})`).join('; ') || 'no tables'}; ${extension.data.migrations} migration${extension.data.migrations === 1 ? '' : 's'} applied. Add new migrations after them in extension.json; never change or reorder applied ones.`,

@@ -48,6 +48,9 @@ export {
   SlotItem,
 } from './contributions.ts'
 export { DataError, DataSummary, ExtensionData, type Row, type SqlValue, migrationsCheck } from './data.ts'
+export { type IslandSpec, HOST_TAG, defineIsland, islandPorts } from './islands/contract.ts'
+export { ExtensionIslands, type IslandViewConfig, islandView } from './islands/view.ts'
+export { IslandBuildError, buildIsland, framePage, frameRoute, frameSrc } from './islands/build.ts'
 export { DiffLine, FileDiff, diffFolders, diffLines } from './diff.ts'
 export {
   DEFAULT_GLOBALS,
