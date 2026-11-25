@@ -108,6 +108,8 @@ Tailwind runs once when an app starts (`"css": "tailwindcss -i src/styles.css -o
 
 Built (2026-11-23): core's `StylesheetChanges` is a `Context.Reference` holding a stream of stylesheet URLs, empty by default. Every open page's stream forwards it as a Datastar signal; the client loads the new stylesheets and removes the old ones once they have loaded, so the page is never without styles. In the example, `src/app/styles.ts` watches `extensions/`, runs Tailwind again (`src/styles.css` now lists `../extensions` as a source; before, classes used only in an extension had no CSS), and publishes `/styles.css?v=<hash>`; `/styles.css` is served with `no-cache`, so pages loaded later get the current file. The check: a new version that adds `text-lime-600`, a class nothing else uses, recolours the open Stand-up page without a page load.
 
+Browser code (2026-11-25): the app's widgets (charts, maps) are islands in its islands bundle; an extension's own islands are built per version and run in sandboxed frames without network ([open-work.md](open-work.md#browser-code-charts-maps-and-islands-of-extensions-built-2026-11-25)).
+
 ## 6. The agent pipeline
 
 Taken from Powermove ([prior-art.md](prior-art.md#agent-pipeline)), with hyper-effect's existing checks as validation:

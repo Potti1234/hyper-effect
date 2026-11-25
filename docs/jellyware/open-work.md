@@ -226,9 +226,42 @@ Tests: the activity of a run that fails a check once, approval steps, follow-ups
 
 - **What is left:** a follow-up of a run still in review starts from what is live, so the agent writes that run's change again; continuing the stage of a run in review would be closer to what people expect. Members cannot write in the chat. Tool calls show the file, not the edit; the diff at the end shows what changed.
 
+## Browser code: charts, maps and islands of extensions (built 2026-11-25)
+
+Extension code ran on the server only, so anything that needs the browser (a tooltip under the pointer, panning a map, dragging a card) could not be built. It comes in two kinds, chosen by who writes the browser code.
+
+**Widgets the app ships, for the common cases.** `chart(...)` (`#app/widgets/chart`) and `map(...)` (`#app/widgets/map`) are islands of the app, built by Vite into its islands bundle (`npm run build:islands`), which every page loads. An extension renders them in a page's view from data; it writes no browser code. As bb puts it, the host draws what it can from declarations.
+
+- **The chart:** line, area and bar, stacked or side by side, up to eight series. The dataviz reference palette is used in light and dark (`--series-1` … `--series-8` in `styles.css`). A crosshair and tooltip list every series at the x under the pointer, and the arrow keys move it. The legend hides and shows series (colours stay with their series). A table view, whole-number ticks for counts, and dates as "Nov 3". Clicks come back as Messages (`onClick`), as island events, which update checks like anything a browser posts. The geometry is pure (`chart-geometry.ts`) and tested; the program has Story tests.
+- **The map:** crease/ui's MapLibre map with OpenFreeMap tiles, copied from the dispatch example. Places are markers with a tooltip (title and details) on hover and focus. The view fits every place, pans to a selected one, and reports clicks on places or picked locations (`onClickPlace`, `onPick`). The pages' content security policy allows the tile server.
+- **In the example:** `extensions/progress` now charts with it (per team, a click on a day lists its tickets), and `extensions/team-map` (new) shows where the team works, from a table of its own, with "Move my marker" picking a location on the map. The island package gained optional event handlers, and a handler that returns null drops an event, so a forged event is not an error.
+
+**An extension's own browser code, for the rest: islands in sandboxed frames.** Item 11 keeps an extension's server code from acting beyond what it is given. Browser code in the page would undo that: it runs as the signed-in person, with their cookie, and can post any event to any page. So an extension's island runs in a frame of its own (`packages/jellyware/src/islands/`):
+
+- **Declared and built per version:** `"islands": { "calendar": "calendar.island.ts" }` in extension.json. The loader bundles each one with esbuild (Effect, Foldkit and what it imports, minified) and keeps the code by its hash. A build error fails the version like any other load error, so it goes back to the agent. The extension reads the frame's address while building, from `ExtensionIslands.src(name)` (a missing name fails the build), and renders `islandView(Contract, { id, src, label, props, onEvent }, h)`.
+- **The frame:** `/_jellyware/islands/<id>/<name>/<hash>` serves a small page with the code inline. Its content security policy runs that one script (by nonce) and loads the app's stylesheet. It allows no network: `connect-src 'none'`, no images or fonts from elsewhere, no forms. The host element puts it in `<iframe sandbox="allow-scripts">`, an opaque origin with no cookies, no storage and no access to the page. The browser check probes all four from inside the frame and sees each one refused.
+- **Between page and frame:** `postMessage` carries props in, and events, the content's height, and failures out (`contract.ts`, checked on both sides). The host takes messages only from its own frame. It forwards the colour scheme, sizes the frame to its content, and turns events into the same `island-event` the app's islands use, so the page's update gets them as Messages.
+- **Failures and new versions:** a new version has a new address, so open pages load the new frame when the page host hands their sessions over; the browser check changes the calendar and sees the change without a page load. A failure in the frame (an uncaught error, or a Foldkit crash, which Foldkit only logs) replaces the frame with a message on the page, and the host reports it. The server logs it and shows it with the extension under Manage extensions until its next version.
+- **In the example:** `extensions/activity` draws a calendar of the workspace's activity (hover a day for its changes, click it to list them), which neither widget does.
+
+**For the agent:** its instructions, the guide (which lists each extension's islands) and "Customize" (Charts, Maps, Browser code of its own) say when to use which, with the references. Two real pi runs:
+
+- **A bar chart** of issues created per week, per team, with a click listing a week's issues. It passed every check on the first attempt in 108 seconds, used the chart widget, and worked after approval (tooltip per week).
+- **A drag-and-drop board** "Now, Next, Later" with the order in a table of its own. pi wrote it as an island with a contract, a program, tests and a table. It passed the checks on the second attempt in 4½ minutes (the first had a numeric `version` in extension.json).
+  - In the browser, its first move crashed the island: it passed a whole Message, `_tag` included, into its event's `make`. Story tests do not run Commands, so its tests missed it. Before the crash reporting above existed, the frame just went blank; finding that is why it exists. The instructions now name the mistake.
+  - With that one line fixed, buttons and drag and drop moved cards inside the sandboxed frame, and the order survived a reload.
+
+Tests: chart geometry, the chart and calendar programs (Story); islands built per version, a broken, misnamed or escaping island, the frame's policy and its script that cannot be closed early, the message protocol (package). Browser check 110/110 (charts, maps, the island and its sandbox, a new version, the workshop listing); 316 tests.
+
+- **What is left:**
+  - **No shared runtime yet:** each island bundles its own Effect and Foldkit (about 300 KB minified, cached by hash). The shims bb and Powermove use would shrink that, but a sandboxed frame still parses its own copy.
+  - **No network for islands:** there is no way to declare a host an island may reach (a map in an island would need its tiles), and a map inside an island cannot fetch its tiles. Use the map widget instead.
+  - **Contained:** tooltips stay inside the frame, and a frame cannot reach the page's keyboard shortcuts.
+  - **Failures not run back to the agent:** a crash in the browser is shown to administrators, not sent to the agent; no check runs an island in a browser before a run goes live.
+
 ## The list
 
-Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 12 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 13 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
 
 ### Done
 
@@ -246,10 +279,10 @@ Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 12 on
 | 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs work side by side (three in the example) instead of one at a time. | Done: [events during a swap](#events-during-a-swap-fixed-2026-11-25), [runs side by side](#runs-side-by-side-built-2026-11-25) |
 | 11 | **A child process per extension**, with a watchdog: bundled, Node's permission model, the app's services over a channel, pages forwarded. | Done: [extensions in their own process](#extensions-in-their-own-process-built-2026-11-25) |
 | 12 | **Data and migrations for extensions.** A SQLite database per extension, append-only migrations declared in extension.json and checked on a copy before a run goes live, rows through `ExtensionData`. | Done: [data of extensions](#data-of-extensions-built-2026-11-25) |
+| 13 | **Browser code in extensions.** Charts and maps the app ships, and an extension's own islands in sandboxed frames without network, built per version. | Done: [browser code](#browser-code-charts-maps-and-islands-of-extensions-built-2026-11-25) |
 
 ### Large
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 13 | **Browser code in extensions.** Islands built with Vite, with shared runtime shims (bb, Powermove) | Charts, editors and drag previews need the DOM | [design.md](design.md#5-stylesheets) |
 | 14 | **Several servers.** Extensions and runs in the shared store (Postgres); a change feed tells every server to load a new version | [One server, one folder](#one-server-one-folder) | above |
