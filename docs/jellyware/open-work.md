@@ -119,11 +119,18 @@ An extension's settings are values people change while the app runs, such as how
 
 Not as designed above: the values are not a Graft publication. `publication.set` rebuilds the extension in place, so a value it fails with would take it down until someone puts the old value back. Loading a new version next to the running one keeps the extension running throughout, and the "put back" comes from the loader for free.
 
-Not built yet: secret settings (never sent to a browser, the stage or the agent) and settings per workspace or member (Graft realms).
+### Secret and member settings (built 2026-11-25)
+
+- **Secret settings** (`"type": "secret"`, no default), for keys of other services. The loader stores them encrypted (AES-256-GCM, key from `secretKey`, in the example `JELLYWARE_SECRETS_KEY`; `packages/jellyware/src/secrets.ts`) and gives them to the extension only as `Redacted` values (`settings.secret(key)`, `settings.hasSecret(key)`); `values` and the typed reads hold none. Everywhere else a secret is set or not set: the statuses a page shows, the history (a short mark per stored value, `(secret 3f2a91)`, which says nothing about the secret), the agent's guide. Extension files hold no values, so the stage has none. On `/extensions` it is a password field that starts empty: left empty it keeps the value, "Remove" clears it. Undo works as for other settings. A value the key cannot open (the key changed) is given to the extension as not set, with a warning in the log. `extensions/triage` declares one ("Support inbox token") and its page says only whether it is set.
+- **Member settings** (`"scope": "member"`): the administrator's value is the default, and every member may set their own under "Your settings" on `/extensions` (any member, not only administrators), or go back to the defaults. A member's value does not build the extension again; the extension reads the values of the member it serves while it runs, `settings.forMember(memberId)`, a stream. Values that no longer fit the declaration fall back to the default. `extensions/related` makes `max` a member setting: Grace's card shows one issue while Ada's shows ten.
+
+- **What secrets miss:** the extension gets the plain value and runs in the server, so code that wants to leak it can; the import rules and the review are what stand against that (see [extensions run with the app's rights](#extensions-run-with-the-apps-rights)). Extensions cannot call other services yet (`fetch` is refused), so a key is of use only once the app offers a service for outbound calls. A secret typed into the form travels in the page's session until it is saved; session snapshots are encrypted too.
+- **What member settings miss:** no history and no undo (a member's own preference; "Use defaults" resets it). A member setting cannot make the extension fail with a value, so there is no put-back either: the extension must cope with every value the declaration allows (`related` caps `max` at 10).
+- **Not built: settings per workspace.** The example has one workspace. Several would want a variant of an extension per workspace, which is what Graft's labelled realms are for ([graft.md](graft.md)): one mount per workspace with its own settings. Per member, one mount each would not scale; values read at use time do.
 
 ### Risks of settings
 
-- **A change reaches everybody.** A setting that controls what a command does, or what a card shows, changes it for every member; only administrators can make it.
+- **A change reaches everybody.** A setting that controls what a command does, or what a card shows, changes it for every member who has no value of their own; only administrators can make it.
 - **A value can be wrong without failing.** "Put back" covers values the extension fails to build with; a value it accepts but that makes it show or do the wrong thing goes live. Undo covers that case by hand.
 - **Undo restores values, not data**, as with runs.
 - **Each change reloads the extension**, so open pages of the extension reconnect (as on any swap), and the swap risks above apply.
@@ -169,9 +176,9 @@ A typecheck does not show a page that renders the wrong thing, and an agent can 
 
 ## The list
 
-Everything left, by size. Items 1 to 8 were done on 2026-11-24, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 8 were done on 2026-11-24 and item 9 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
 
-### Small fixes that close known risks
+### Done
 
 | # | Work | Status |
 |---|---|---|
@@ -180,18 +187,15 @@ Everything left, by size. Items 1 to 8 were done on 2026-11-24, in this order; t
 | 3 | **pi writes only in the stage.** A pi extension that checks every tool call. | Done: [the agent can write outside its stage](#the-agent-can-write-outside-its-stage) |
 | 4 | **A time limit per slot card.** A slow card shows "Loading…"; the others show. | Done: [one slow card](#one-slow-card-hides-the-others-in-its-slot-fixed) |
 | 5 | **Roles and approval.** Runs and settings only for administrators. An approval step between "checked" and "installed" in which a person reads the diff. Commands that name the roles that may run them, checked by the registry before `run`. | Done: [who may change the app](#who-may-change-the-app-roles-and-review-since-2026-11-24), [commands](#commands-trust-the-extension-to-check-rights-roles-since-2026-11-24) |
-
 | 6 | **A generated guide for the agent.** The loaded extensions, their pages, slots, commands and settings, written for pi before each run, as bb's `plugin-commands-skill.ts` does. | Done: [the agent's guide](#the-agents-guide-built-2026-11-24) |
-
 | 7 | **More slots.** Actions on the selected row and entries in the command palette, badges on list rows and board cards, and a list on `/extensions` of everything that can be customized. | Done: [slots and what can be customized](#slots-and-what-can-be-customized-built-2026-11-24) |
-
 | 8 | **Better checks.** The extension's own Story and Scene tests in the checks. The agent declares what it changed, and a mismatch with the diff goes back to it (Powermove). | Done: [better checks](#better-checks-built-2026-11-24) |
+| 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per member. Per workspace not built (one workspace). | Done: [secret and member settings](#secret-and-member-settings-built-2026-11-25) |
 
 ### Medium
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
-| 9 | **More settings.** Secret settings (never sent to a browser, the stage or the agent); settings per workspace or member (Graft realms). | Extensions that call other services need keys | [settings](#settings-for-extensions-built-2026-11-24) |
 | 10 | **Smoother swaps and runs.** The page host hands each open session from the old version to the new one, so no snapshot is overwritten. Runs queue or run side by side instead of one at a time. | [Events during a swap](#events-during-a-swap); a long run blocks the next | `packages/jellyware/src/changes.ts` |
 
 ### Large
