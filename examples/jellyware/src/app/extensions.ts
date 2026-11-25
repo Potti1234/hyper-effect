@@ -177,6 +177,24 @@ export const CUSTOMIZATIONS: ReadonlyArray<Customization> = [
     how: "Declare `settings` in extension.json and read them while building with `ExtensionSettings`. `related/` declares three.",
     example: 'Add a setting to Related issues that hides closed issues.',
   },
+  {
+    id: 'charts',
+    title: 'Charts',
+    where: 'On any page of an extension: line, area and bar charts with a tooltip for every series, a legend, a table view and clicks.',
+    seeAt: '/progress',
+    slot: null,
+    how: "Render `chart({ id, kind: 'line' | 'area' | 'bar', label, x, series, stacked?, unit?, decimals?, height?, onClick? }, h)` from `#app/widgets/chart` in a page's view: `x` are the x positions (labels, or dates as yyyy-mm-dd), `series` at most eight `{ id, label, values }` with one value (or null) per x. It runs in the browser (an island the app ships): hover, tooltips, the legend and the table view need no code. `onClick` turns a click on an x position (or a bar: `point.series`) into a Message; check it in update like anything a browser posts. `progress/` is the reference.",
+    example: 'Add a page with a bar chart of the issues created per week over the last twelve weeks, one series per team; a click on a week lists its issues.',
+  },
+  {
+    id: 'maps',
+    title: 'Maps',
+    where: 'On any page of an extension: places as markers with a tooltip, panning and zooming, clicks on places and picked locations.',
+    seeAt: '/team-map',
+    slot: null,
+    how: "Render `map({ id, label, places, selectedId?, center?, zoom?, height?, onClickPlace?, onPick? }, h)` from `#app/widgets/map` in a page's view: a place is `{ id, longitude, latitude, title, details?, badge?, tone? }` (its tooltip shows the title and details). It runs in the browser (an island the app ships, MapLibre with OpenFreeMap tiles) and fits every place unless given a center. `onClickPlace` and `onPick` turn clicks into Messages; check them in update. Coordinates the app does not have go into the extension's own table. `team-map/` is the reference.",
+    example: 'Add a map of the customers we support, kept in a table of the extension, with the number of open issues per customer on each marker.',
+  },
 ]
 
 /** The slots, described for the agent's guide (src/app/agent.ts). */
@@ -199,6 +217,10 @@ export const isAdmin = (member: Member): boolean => member.role === 'admin'
  *  included: add `path`. */
 export const pageOptions: Options = {
   stylesheets: ['/styles.css'],
+  // The islands bundle: the widgets in src/app/widgets (charts, maps).
+  scripts: ['/assets/islands.js'],
+  // The map widget's tiles and style (OpenFreeMap).
+  contentSecurityPolicy: { directives: { 'connect-src': ['https://tiles.openfreemap.org'] } },
   // Sessions belong to the signed-in user; signing out ends them.
   principal,
   snapshotSecret: secretFromEnvironment('HYPER_SNAPSHOT_SECRET', 'dev-snapshot-secret, set HYPER_SNAPSHOT_SECRET'),

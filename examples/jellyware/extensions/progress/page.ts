@@ -7,6 +7,7 @@ import type { Contributions } from '@hyper-effect/jellyware'
 import { Issue, formatDate } from '#app/domain'
 import { Shell, frame, loadShell, shellChanges } from '#app/extensions'
 import { Workspace, type WorkspaceState } from '#app/store'
+import { chart as chartWidget } from '#app/widgets/chart'
 
 export const PATH = '/progress'
 const DAY = 86_400_000
@@ -17,17 +18,27 @@ type Completion = typeof Completion.Type
 const Data = S.Struct({ completions: S.Array(Completion), today: S.Number })
 type Data = typeof Data.Type
 
-export const Model = S.Struct({ shell: Shell, data: Data, days: S.Number, team: Team, mode: Mode })
+export const Model = S.Struct({
+  shell: Shell,
+  data: Data,
+  days: S.Number,
+  team: Team,
+  mode: Mode,
+  /** The day clicked in the chart (yyyy-mm-dd): the list shows its tickets. */
+  day: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
+})
 export type Model = typeof Model.Type
 export const Message = defineMessageUnion({
   SelectedRange: { days: S.Number },
   SelectedTeam: { team: Team },
   SelectedMode: { mode: Mode },
+  ClickedDay: { day: S.String },
+  ClickedAllDays: {},
   GotData: { data: Data },
   GotShell: { shell: Shell },
 })
 export type Message = typeof Message.Type
-export const ClientMessage = S.Union([Message.SelectedRange, Message.SelectedTeam, Message.SelectedMode])
+export const ClientMessage = S.Union([Message.SelectedRange, Message.SelectedTeam, Message.SelectedMode, Message.ClickedAllDays])
 type ClientMessage = typeof ClientMessage.Type
 type Flags = Readonly<{ shell: Shell; data: Data; days: number }>
 
@@ -55,8 +66,12 @@ export const update = (model: Model, message: Message): Update.Return<Model, Mes
     M.withReturnType<Update.Return<Model, Message>>(),
     M.tagsExhaustive({
       SelectedRange: ({ days }) => Number.isInteger(days) && days >= 7 && days <= 180
-        ? { model: { ...model, days } } : { model },
+        ? { model: { ...model, days, day: null } } : { model },
       SelectedTeam: ({ team }) => ({ model: { ...model, team } }),
+      // From the chart (a browser posts it): only a day the chart shows.
+      ClickedDay: ({ day }) => seriesOf(model).points.some(point => isoDay(point.at) === day)
+        ? { model: { ...model, day: model.day === day ? null : day } } : { model },
+      ClickedAllDays: () => ({ model: { ...model, day: null } }),
       SelectedMode: ({ mode }) => ({ model: { ...model, mode } }),
       GotData: ({ data }) => ({ model: { ...model, data } }),
       GotShell: ({ shell }) => ({ model: { ...model, shell } }),
@@ -79,6 +94,29 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Contr
     ))),
   }),
 }))
+
+const isoDay = (at: number) => new Date(at).toISOString().slice(0, 10)
+
+const TEAMS = [{ id: 'ENG', label: 'Engineering' }, { id: 'DES', label: 'Design' }] as const
+
+/** Per team shown, completions per day (or the running total). */
+export const teamSeries = (model: Model) => {
+  const { start, completions } = seriesOf(model)
+  return TEAMS.filter(team => model.team === 'all' || model.team === team.id).map(team => {
+    const counts = Array.from({ length: model.days }, () => 0)
+    for (const item of completions) {
+      if (item.issue.team !== team.id) continue
+      const index = Math.floor((item.at - start) / DAY)
+      counts[index] = (counts[index] ?? 0) + 1
+    }
+    let total = 0
+    return {
+      id: team.id,
+      label: team.label,
+      values: counts.map(count => (model.mode === 'daily' ? count : (total += count))),
+    }
+  })
+}
 
 export const seriesOf = (model: Model) => {
   const start = model.data.today - (model.days - 1) * DAY
@@ -123,74 +161,49 @@ const controls = (model: Model, h: HtmlBuilder<Message>): Html =>
 
 const chart = (model: Model, h: HtmlBuilder<Message>): Html => {
   const { points, completions, start } = seriesOf(model)
-  const max = Math.max(1, ...points.map(point => point.value))
-  const ceiling = max <= 4 ? max : Math.ceil(max / 4) * 4
-  const x = (index: number) => 16 + index * 768 / (points.length - 1)
-  const y = (value: number) => 236 - value / ceiling * 216
-  const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(index)},${y(point.value)}`).join(' ')
-  const ticks = [...new Set([ceiling, Math.round(ceiling / 2), 0])]
   const estimated = completions.filter(item => item.estimated).length
+  const listed = model.day === null ? completions : completions.filter(item => isoDay(item.at) === model.day)
   return h.div([h.Id('progress-content'), h.Class('flex-1 overflow-y-auto p-4')], [
     h.section([h.Class('rounded-lg border bg-card p-4')], [
       h.div([h.Class('mb-4 flex flex-wrap items-center justify-between gap-3')], [
         h.div([], [
           h.h2([h.Class('text-[13px] font-semibold')], ['Completed tickets']),
-          h.p([h.Class('text-[11px] text-muted-foreground')], [`${formatDate(start)} – ${formatDate(model.data.today)} · UTC · ${model.mode === 'daily' ? 'Tickets per day' : 'Running total within selected range'}`]),
+          h.p([h.Class('text-[11px] text-muted-foreground')], [`${formatDate(start)} – ${formatDate(model.data.today)} · UTC · ${model.mode === 'daily' ? 'Tickets per day' : 'Running total within selected range'} · click a day for its tickets`]),
         ]),
         h.div([h.Class('text-2xl font-semibold tabular-nums')], [String(completions.length)]),
       ]),
       completions.length === 0
         ? h.p([h.Class('py-8 text-center text-[13px] text-muted-foreground')], ['No completed tickets in this time range. Try a longer range or another team.'])
-        : h.div([], [
-          h.div([h.Class('flex gap-2')], [
-            h.div([h.Class('flex w-8 shrink-0 flex-col justify-between py-4 text-right text-[11px] text-muted-foreground tabular-nums')],
-              [ceiling, Math.round(ceiling / 2), 0].map(value => h.span([], [String(value)]))),
-            h.svg([
-              h.Xmlns('http://www.w3.org/2000/svg'), h.ViewBox('0 0 800 256'), h.Width('800'), h.Height('256'),
-              h.Class('h-64 w-full'), h.Role('img'),
-              h.AriaLabel(`${model.mode === 'daily' ? 'Daily completions' : 'Cumulative completions'}: ${completions.length} completed tickets over ${model.days} days. Daily counts are listed below.`),
-            ], [
-              ...ticks.map(value => h.path([h.D(`M8 ${y(value)} H792`), h.Stroke('currentColor'), h.Opacity('0.15'), h.Fill('none')], [])),
-              ...(model.mode === 'cumulative' ? [
-                h.path([h.D(`${line} L784 236 L16 236 Z`), h.Fill('#5e6ad2'), h.Opacity('0.12')], []),
-                h.path([h.D(line), h.Fill('none'), h.Stroke('#5e6ad2'), h.StrokeWidth('3'), h.StrokeLinejoin('round')], []),
-              ] : points.map((point, index) => h.rect([
-                h.X(String(x(index) - Math.max(2, 600 / points.length) / 2)), h.Y(String(y(point.value))),
-                h.Width(String(Math.max(2, 600 / points.length))), h.Height(String(236 - y(point.value))),
-                h.Fill('#5e6ad2'), h.Rx('1'),
-              ], []))),
-            ]),
-          ]),
-          h.div([h.Class('flex justify-between pl-10 text-[11px] text-muted-foreground')],
-            [start, start + Math.floor((model.days - 1) / 2) * DAY, model.data.today].map(at => h.span([], [formatDate(at)]))),
-        ]),
+        : chartWidget({
+          id: 'progress-chart',
+          kind: model.mode === 'daily' ? 'bar' : 'area',
+          stacked: true,
+          label: model.mode === 'daily' ? 'Completed tickets per day' : 'Completed tickets, running total',
+          x: points.map(point => isoDay(point.at)),
+          series: teamSeries(model),
+          unit: 'tickets',
+          height: 260,
+          onClick: point => Message.ClickedDay({ day: point.x }),
+        }, h),
       h.p([h.Class('mt-4 text-[11px] text-muted-foreground')], [
         'Counts currently Done tickets once at their latest completion. Canceled and reopened tickets are excluded. Updates live.',
         ...(estimated > 0 ? [` ${estimated} ticket(s) lack completion activity; their last-updated dates are estimates.`] : []),
       ]),
     ]),
-    h.details([h.Class('mt-4 rounded-lg border bg-card p-4')], [
-      h.summary([h.Class('cursor-pointer text-[13px] font-medium')], ['Daily counts']),
-      h.table([h.Class('mt-3 w-full text-left text-[13px] tabular-nums')], [
-        h.thead([], [h.tr([], [h.th([h.Class('py-2')], ['Date (UTC)']), h.th([], ['Completed']), h.th([], ['Running total'])])]),
-        h.tbody([], points.map((point, index) => h.tr([h.Class('border-t')], [
-          h.td([h.Class('py-1.5')], [new Date(point.at).toISOString().slice(0, 10)]),
-          h.td([], [String(point.count)]),
-          h.td([], [String(points.slice(0, index + 1).reduce((sum, item) => sum + item.count, 0))]),
-        ]))),
+    h.section([h.Id('progress-list'), h.Class('mt-4 rounded-lg border bg-card p-4')], [
+      h.div([h.Class('mb-2 flex items-center gap-2')], [
+        h.h2([h.Class('flex-1 text-[13px] font-semibold')], [model.day === null ? 'Recently completed' : `Completed on ${formatDate(Date.parse(model.day))}`]),
+        ...(model.day === null ? [] : [h.button([h.Id('progress-all-days'), h.Type('button'), h.OnClick(Message.ClickedAllDays()), h.Class('rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:bg-accent')], ['All days'])]),
       ]),
-    ]),
-    h.section([h.Class('mt-4 rounded-lg border bg-card p-4')], [
-      h.h2([h.Class('mb-2 text-[13px] font-semibold')], ['Recently completed']),
-      ...completions.slice(0, 20).map(item => h.a([
+      ...listed.slice(0, 20).map(item => h.a([
         h.Href(`/issue/${item.issue.identifier}`), h.Class('flex items-center gap-3 rounded-md px-2 py-1.5 text-[13px] hover:bg-accent'),
       ], [
         h.span([h.Class('shrink-0 text-muted-foreground')], [item.issue.identifier]),
         h.span([h.Class('min-w-0 flex-1 truncate')], [item.issue.title]),
         h.span([h.Class('shrink-0 text-[11px] text-muted-foreground')], [`${formatDate(item.at)}${item.estimated ? ' (estimated)' : ''}`]),
       ])),
-      ...(completions.length === 0 ? [h.p([h.Class('text-[13px] text-muted-foreground')], ['No tickets to show.'])] : []),
-      ...(completions.length > 20 ? [h.p([h.Class('mt-2 text-[11px] text-muted-foreground')], [`Showing the most recent 20 of ${completions.length} tickets.`])] : []),
+      ...(listed.length === 0 ? [h.p([h.Class('text-[13px] text-muted-foreground')], ['No tickets to show.'])] : []),
+      ...(listed.length > 20 ? [h.p([h.Class('mt-2 text-[11px] text-muted-foreground')], [`Showing the most recent 20 of ${listed.length} tickets.`])] : []),
     ]),
   ])
 }
@@ -200,7 +213,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
   body: frame(model.shell, PATH, [
     h.header([h.Class('flex h-11 shrink-0 items-center border-b px-4')], [h.h1([h.Class('text-[13px] font-semibold')], ['Progress'])]),
     region(h, { id: 'progress-controls', deps: [model.days, model.team, model.mode], render: () => controls(model, h) }),
-    region(h, { id: 'progress-content', deps: [model.data, model.days, model.team, model.mode], render: () => chart(model, h) }),
+    region(h, { id: 'progress-content', deps: [model.data, model.days, model.team, model.mode, model.day], render: () => chart(model, h) }),
   ], h),
 })
 
@@ -212,7 +225,7 @@ export const makeProgram = (defaultDays: number): Program<Model, Message, Client
     const now = yield* Clock.currentTimeMillis
     return { shell, data: dataOf(state, now), days: defaultDays }
   }),
-  init: flags => ({ model: { shell: flags.shell, data: flags.data, days: flags.days, team: 'all', mode: 'cumulative' } }),
+  init: flags => ({ model: { shell: flags.shell, data: flags.data, days: flags.days, team: 'all', mode: 'cumulative', day: null } }),
   update, view, subscriptions,
-  snapshotDeps: model => [model.days, model.team, model.mode],
+  snapshotDeps: model => [model.days, model.team, model.mode, model.day],
 })

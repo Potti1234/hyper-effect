@@ -6,7 +6,8 @@ import type { ImportRules } from '@hyper-effect/jellyware'
    jellyware that pages and extensions need (not `fileStore`,
    `secretFromEnvironment` or the run pipeline), and the app modules listed
    in AGENTS.md. Not `#app/agent` or `#app/styles`: they run programs and
-   watch files. */
+   watch files. Of the widgets only the server side (`chart`, `map`): their
+   browser programs are the app's. */
 
 export const importRules: ImportRules = {
   allow: [
@@ -48,6 +49,9 @@ export const importRules: ImportRules = {
     '=#app/domain',
     '=#app/store',
     '#app/view/*',
+    // Charts and maps that run in the browser (islands the app ships).
+    '=#app/widgets/chart',
+    '=#app/widgets/map',
   ],
   // Test files: the test runner, Foldkit's Story and Scene (in `foldkit`),
   // serving a page over HTTP, and the seed data.

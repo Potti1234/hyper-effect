@@ -1,0 +1,11 @@
+{
+  "id": "team-map",
+  "name": "Team map",
+  "version": "1",
+  "entry": "extension.ts",
+  "description": "Where the team works, on a map: each city with its people and their open issues; each member can move their own marker.",
+  "migrations": [
+    "CREATE TABLE places (member_id TEXT PRIMARY KEY, city TEXT NOT NULL, longitude REAL NOT NULL, latitude REAL NOT NULL)",
+    "INSERT INTO places (member_id, city, longitude, latitude) VALUES ('ada', 'London', -0.1276, 51.5072), ('grace', 'New York', -74.006, 40.7128), ('linus', 'Helsinki', 24.9384, 60.1699), ('margaret', 'Boston', -71.0589, 42.3601), ('alan', 'Manchester', -2.2426, 53.4808), ('katherine', 'Washington', -77.0369, 38.9072)"
+  ]
+}

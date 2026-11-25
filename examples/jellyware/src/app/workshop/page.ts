@@ -1693,8 +1693,10 @@ const extensionsSection = (model: Model, h: HtmlBuilder<Message>): Html =>
 
 // CUSTOMIZE AND PEOPLE
 
-/** Who fills one way to customize now: extension names, or the app. */
-const filledBy = (model: Model, customization: Customization): ReadonlyArray<string> => {
+/** Who fills one way to customize now: extension names, or the app; null
+ *  where the page cannot tell (charts and maps are in extensions' code). */
+const filledBy = (model: Model, customization: Customization): ReadonlyArray<string> | null => {
+  if (customization.id === 'charts' || customization.id === 'maps') return null
   const nameOf = (owner: string | null) =>
     owner === null ? 'the app' : (model.extensions.find(extension => extension.id === owner)?.name ?? owner)
   const owners =
@@ -1732,7 +1734,9 @@ const customizeSection = (model: Model, h: HtmlBuilder<Message>): Html =>
                 ],
               ),
               h.p([h.Class('text-[12px] text-muted-foreground')], [customization.where]),
-              h.p([h.Class('text-[11.5px]')], [h.span([h.Class('text-muted-foreground')], ['Now: ']), now.length === 0 ? 'nothing yet' : now.join(', ')]),
+              ...(now === null
+                ? []
+                : [h.p([h.Class('text-[11.5px]')], [h.span([h.Class('text-muted-foreground')], ['Now: ']), now.length === 0 ? 'nothing yet' : now.join(', ')])]),
               h.div(
                 [h.Class('mt-auto flex items-center justify-end gap-1.5 pt-1')],
                 [

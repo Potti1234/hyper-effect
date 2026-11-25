@@ -273,6 +273,70 @@ try {
     check('the workshop shows its tables', (await ada.page.textContent('#extension-data-pins')).includes('pins (1 migration)'))
   }
 
+  // CHARTS AND MAPS: islands the app ships, used by extensions
+  {
+    await ada.page.goto(`${base}/progress`)
+    await ada.page.waitForSelector('app-chart [role="group"] svg', { timeout: TIMEOUT })
+    await ada.page.waitForTimeout(400)
+    check('an extension page shows a chart, drawn in the browser', (await ada.page.locator('app-chart path[data-line]').count()) > 0)
+    const plot = await ada.page.locator('app-chart [role="group"]').boundingBox()
+    await ada.page.mouse.move(plot.x + plot.width * 0.8, plot.y + plot.height * 0.5)
+    check(
+      'hovering shows a tooltip with every series at that day',
+      await until(ada.page, () => {
+        const text = document.querySelector('[data-chart-tooltip]')?.textContent ?? ''
+        return text.includes('Engineering') && text.includes('Design') && text.includes('Total')
+      }),
+    )
+    await ada.page.getByRole('button', { name: 'Daily' }).click()
+    await ada.page.waitForSelector('app-chart path[data-bar]', { state: 'attached', timeout: TIMEOUT })
+    await ada.page.waitForTimeout(300)
+    const bar = await ada.page.evaluate(() => {
+      const tall = [...document.querySelectorAll('app-chart path[data-bar]')].reverse().find(path => path.getBoundingClientRect().height > 6)
+      const box = tall?.getBoundingClientRect()
+      return box === undefined ? null : { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+    })
+    if (bar !== null) await ada.page.mouse.click(bar.x, bar.y)
+    check(
+      'a click on a bar reaches the page’s update (its day’s tickets)',
+      bar !== null && (await until(ada.page, () => (document.querySelector('#progress-list h2')?.textContent ?? '').startsWith('Completed on'))),
+    )
+    await ada.page.locator('app-chart [role="group"]').focus()
+    await ada.page.keyboard.press('Home')
+    check('the keyboard moves the tooltip', await until(ada.page, () => document.querySelector('[data-chart-tooltip]') !== null))
+    await ada.page.click('app-chart button[data-series="DES"]')
+    check('the legend hides a series', await until(ada.page, () => document.querySelectorAll('app-chart path[data-bar^="DES"]').length === 0))
+    await ada.page.click('app-chart button[data-chart-table]')
+    check('and a table view lists every day', await until(ada.page, () => document.querySelectorAll('app-chart table tbody tr').length === 30))
+    await ada.page.evaluate(() => {
+      window.__chart = document.querySelector('app-chart')
+    })
+    await ada.page.getByRole('button', { name: '90 days' }).click()
+    check(
+      'new data from the server reaches the open chart, which keeps what the reader chose',
+      (await until(ada.page, () => document.querySelectorAll('app-chart table tbody tr').length === 90)) &&
+        (await ada.page.evaluate(() => document.querySelector('app-chart') === window.__chart)),
+    )
+
+    await ada.page.goto(`${base}/team-map`)
+    check('an extension page shows a map with a marker per city', await until(ada.page, () => document.querySelectorAll('app-map [data-place]').length === 6))
+    check('with tiles loaded', await until(ada.page, () => document.querySelector('app-map canvas') !== null))
+    const helsinki = ada.page.locator('app-map [data-map-marker-id="Helsinki"]')
+    await ada.page.waitForTimeout(1500)
+    const spot = await helsinki.boundingBox()
+    await ada.page.mouse.move(spot.x + spot.width / 2, spot.y + spot.height / 2)
+    check(
+      'hovering a marker shows its tooltip',
+      await until(ada.page, () => {
+        const tip = document.querySelector('[data-map-marker-id="Helsinki"] [role="tooltip"]')
+        return tip !== null && getComputedStyle(tip).display !== 'none' && tip.textContent.includes('Linus Torvalds')
+      }),
+    )
+    await ada.page.mouse.click(spot.x + spot.width / 2, spot.y + spot.height / 2)
+    check('a click on a marker reaches the page’s update', await until(ada.page, () => (document.querySelector('#team-map-city h2')?.textContent ?? '').startsWith('Helsinki')))
+    check('and the island rings it', await until(ada.page, () => document.querySelector('[data-place="Helsinki"]')?.className.includes('ring-4') === true))
+  }
+
   // SLOTS IN THE ISSUE LISTS
   const openList = async path => {
     const stream = ada.page.waitForRequest(request => request.url().includes('/stream'))
@@ -319,7 +383,7 @@ try {
   check('a section opens from the second sidebar', await until(ada.page, () => document.querySelector('#workshop-customize') !== null && location.pathname === '/extensions/customize'))
   check('within the session', await ada.page.evaluate(() => window.__sameDocument === true))
   await ada.page.waitForTimeout(300)
-  check('the workshop lists every place an extension can change', (await ada.page.locator('#workshop-customize > ul > li').count()) === 5)
+  check('the workshop lists every place an extension can change', (await ada.page.locator('#workshop-customize > ul > li').count()) === 7)
   check(
     'with what fills each now',
     (await ada.page.textContent('#customize-issues-badges')).includes('Stale issues') &&

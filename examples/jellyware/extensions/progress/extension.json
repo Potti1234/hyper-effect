@@ -1,9 +1,9 @@
 {
   "id": "progress",
   "name": "Progress",
-  "version": "1",
+  "version": "2",
   "entry": "extension.ts",
-  "description": "Live completed-ticket charts over time, with team and date-range filters.",
+  "description": "Live completed-ticket charts over time per team, with tooltips, team and date-range filters; a click on a day lists its tickets.",
   "settings": {
     "defaultDays": {
       "type": "number",
