@@ -457,15 +457,15 @@ export const isolatedExtension = (
       })
       serve('contributions.slotCards', {
         kind: 'stream',
-        open: ([slot, slotContext]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotCards(String(slot), decoded))),
+        open: ([slot, slotContext, shared]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotCards(String(slot), decoded, { shared: shared === true }))),
       })
       serve('contributions.slotBadges', {
         kind: 'stream',
-        open: ([slot, slotContext]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotBadges(String(slot), decoded))),
+        open: ([slot, slotContext, shared]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotBadges(String(slot), decoded, { shared: shared === true }))),
       })
       serve('contributions.slotData', {
         kind: 'stream',
-        open: ([slot, slotContext]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotData(String(slot), decoded))),
+        open: ([slot, slotContext, shared]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotData(String(slot), decoded, { shared: shared === true }))),
       })
       serve('contributions.inventory', { kind: 'call', run: () => contributions.inventory })
       serve('contributions.inventoryChanges', { kind: 'stream', open: () => contributions.inventoryChanges })

@@ -55,7 +55,7 @@ const Host = Layer.mergeAll(
   // Commands that name roles are checked against the member's role.
   Jellyware.Contributions.make({ rolesOf: Extensions.rolesOf }),
   // Rebuilds the CSS for classes extensions add, and moves open pages to it.
-  Styles.layer({ appDirectory, extensionsDirectory }),
+  Styles.layer({ appDirectory, extensionsDirectory, watchSources: process.env['NODE_ENV'] !== 'production' }),
 )
 
 const Loaded = Jellyware.layer({

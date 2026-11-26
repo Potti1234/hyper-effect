@@ -20,6 +20,7 @@ export {
   SlotCard,
   SlotContent,
   type SlotContext,
+  type SlotRead,
   type SlotEntry,
   SlotItem,
   SlotValue,

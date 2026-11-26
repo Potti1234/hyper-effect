@@ -1,4 +1,4 @@
-import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Scope, Stream, SubscriptionRef } from 'effect'
+import { Cause, Context, Deferred, Duration, Effect, Exit, Layer, Option, Schema as S, Scope, Semaphore, Stream, SubscriptionRef } from 'effect'
 
 /* What extensions add to the app's own pages, with change feeds the pages
    subscribe to. Every entry belongs to the scope that added it: an
@@ -114,6 +114,13 @@ export type Inventory = typeof Inventory.Type
  *  member looking). Each slot documents its keys. */
 export type SlotContext = Readonly<Record<string, string>>
 
+/** How a slot is read. `shared`: one stream per slot and context for every
+ *  reader that asks for it (pages of all sessions), started by the first
+ *  and kept `keepShared` after the last. A reader that comes while an
+ *  update is on its way sees the value before it first, then the update,
+ *  so one-off reads (`Stream.runHead`) should not share. */
+export type SlotRead = Readonly<{ shared?: boolean }>
+
 export type SlotEntry<R = never> = Readonly<{
   /** The slot's name, such as `issue.sidebar`. */
   slot: string
@@ -171,6 +178,10 @@ export type ContributionsOptions<R> = Readonly<{
   /** The roles of a member, for commands that name roles. Without it, such
    *  commands are refused to everyone. */
   rolesOf?: (memberId: string) => Effect.Effect<ReadonlyArray<string>, never, R>
+  /** How long a shared slot stream (`{ shared: true }`) keeps running after
+   *  its last reader left, for the next page that asks. Default five
+   *  seconds. */
+  keepShared?: Duration.Input
 }>
 
 export class Contributions extends Context.Service<
@@ -186,17 +197,17 @@ export class Contributions extends Context.Service<
     readonly slot: <R>(entry: SlotEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
     /** The cards of a slot for a context, now and after every change of an
      *  entry or of its content. */
-    readonly slotCards: (slot: string, context: SlotContext) => Stream.Stream<ReadonlyArray<SlotCard>>
+    readonly slotCards: (slot: string, context: SlotContext, read?: SlotRead) => Stream.Stream<ReadonlyArray<SlotCard>>
     /** Adds badges to a slot for the life of the current scope. */
     readonly badges: <R>(entry: BadgeEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
     /** The badges of a slot for a context, from every entry, now and after
      *  every change. */
-    readonly slotBadges: (slot: string, context: SlotContext) => Stream.Stream<ReadonlyArray<SlotBadge>>
+    readonly slotBadges: (slot: string, context: SlotContext, read?: SlotRead) => Stream.Stream<ReadonlyArray<SlotBadge>>
     /** Adds a value to a data slot for the life of the current scope. */
     readonly data: <R>(entry: DataEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
     /** The values of a data slot for a context, one per entry that has
      *  one, now and after every change. */
-    readonly slotData: (slot: string, context: SlotContext) => Stream.Stream<ReadonlyArray<SlotValue>>
+    readonly slotData: (slot: string, context: SlotContext, read?: SlotRead) => Stream.Stream<ReadonlyArray<SlotValue>>
     /** Adds a command for the life of the current scope. */
     readonly command: <R>(entry: CommandEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
     /** Runs a command; fails with a line for the member when it is gone or
@@ -214,6 +225,10 @@ export class Contributions extends Context.Service<
       Contributions,
       Effect.gen(function* () {
         const cardTimeout = options.cardTimeout ?? Duration.seconds(1)
+        const keep = options.keepShared ?? Duration.seconds(5)
+        const shareCards = yield* sharedStreams<ReadonlyArray<SlotCard>>(keep)
+        const shareBadges = yield* sharedStreams<ReadonlyArray<SlotBadge>>(keep)
+        const shareData = yield* sharedStreams<ReadonlyArray<SlotValue>>(keep)
         const navs = yield* stacks<NavEntry>()
         const slots = yield* stacks<SlotEntry>()
         const commands = yield* stacks<CommandEntry>()
@@ -266,8 +281,8 @@ export class Contributions extends Context.Service<
                 content: context => entry.content(context).pipe(Stream.provideContext(services)),
               }, owner)
             }),
-          slotCards: (slot, context) =>
-            SubscriptionRef.changes(slots.live).pipe(
+          slotCards: (slot, context, read) =>
+            shareCards(read?.shared === true, `cards\u0000${slot}\u0000${keyOf(context)}\u0000${slots.version()}`, () => SubscriptionRef.changes(slots.live).pipe(
               Stream.map(all => all.filter(entry => entry.slot === slot)),
               Stream.changesWith((a, b) => a.length === b.length && a.every((entry, index) => entry === b[index])),
               Stream.switchMap(entries =>
@@ -293,7 +308,7 @@ export class Contributions extends Context.Service<
                       ),
                     ),
               ),
-            ),
+            )),
           badges: <R,>(entry: BadgeEntry<R>) =>
             Effect.gen(function* () {
               const services = yield* Effect.context<R>()
@@ -308,8 +323,8 @@ export class Contributions extends Context.Service<
                 owner,
               )
             }),
-          slotBadges: (slot, context) =>
-            SubscriptionRef.changes(badgeEntries.live).pipe(
+          slotBadges: (slot, context, read) =>
+            shareBadges(read?.shared === true, `badges\u0000${slot}\u0000${keyOf(context)}\u0000${badgeEntries.version()}`, () => SubscriptionRef.changes(badgeEntries.live).pipe(
               Stream.map(all => all.filter(entry => entry.slot === slot)),
               Stream.changesWith((a, b) => a.length === b.length && a.every((entry, index) => entry === b[index])),
               Stream.switchMap(entries =>
@@ -331,7 +346,7 @@ export class Contributions extends Context.Service<
                       ),
                     ).pipe(Stream.map(lists => lists.flat())),
               ),
-            ),
+            )),
           data: <R,>(entry: DataEntry<R>) =>
             Effect.gen(function* () {
               const services = yield* Effect.context<R>()
@@ -342,8 +357,8 @@ export class Contributions extends Context.Service<
                 owner,
               )
             }),
-          slotData: (slot, context) =>
-            SubscriptionRef.changes(dataEntries.live).pipe(
+          slotData: (slot, context, read) =>
+            shareData(read?.shared === true, `data\u0000${slot}\u0000${keyOf(context)}\u0000${dataEntries.version()}`, () => SubscriptionRef.changes(dataEntries.live).pipe(
               Stream.map(all => all.filter(entry => entry.slot === slot)),
               Stream.changesWith((a, b) => a.length === b.length && a.every((entry, index) => entry === b[index])),
               Stream.switchMap(entries =>
@@ -364,7 +379,7 @@ export class Contributions extends Context.Service<
                       ),
                     ).pipe(Stream.map(values => values.filter((value): value is SlotValue => value !== null))),
               ),
-            ),
+            )),
           command: <R,>(entry: CommandEntry<R>) =>
             Effect.gen(function* () {
               const services = yield* Effect.context<R>()
@@ -405,6 +420,73 @@ export class Contributions extends Context.Service<
 
 const sameInventory = (a: Inventory, b: Inventory) => JSON.stringify(a) === JSON.stringify(b)
 
+/** A context as a key: its entries in order. */
+const keyOf = (context: SlotContext) =>
+  JSON.stringify(Object.keys(context).sort().map(key => [key, context[key]]))
+
+/** One running stream per key, shared by everyone who reads it: the first
+ *  reader starts it, later ones get its latest value and what follows, and
+ *  it stops `keep` after the last reader left (unless one comes back). */
+const sharedStreams = <A,>(keep: Duration.Input) =>
+  Effect.gen(function* () {
+    const lifetime = yield* Effect.scope
+    const lock = yield* Semaphore.make(1)
+    type Entry = { readonly latest: SubscriptionRef.SubscriptionRef<Option.Option<A>>; readonly scope: Scope.Closeable; readers: number; idle: number }
+    const entries = new Map<string, Entry>()
+    const acquire = (key: string, make: () => Stream.Stream<A>) =>
+      lock.withPermits(1)(
+        Effect.gen(function* () {
+          const known = entries.get(key)
+          if (known !== undefined) {
+            known.readers += 1
+            known.idle += 1
+            return known
+          }
+          const scope = yield* Scope.fork(lifetime)
+          const latest = yield* SubscriptionRef.make<Option.Option<A>>(Option.none())
+          yield* make().pipe(
+            Stream.runForEach(value => SubscriptionRef.set(latest, Option.some(value))),
+            Effect.forkIn(scope),
+          )
+          const entry: Entry = { latest, scope, readers: 1, idle: 0 }
+          entries.set(key, entry)
+          return entry
+        }),
+      )
+    const release = (key: string, entry: Entry) =>
+      Effect.gen(function* () {
+        entry.readers -= 1
+        if (entry.readers > 0) return
+        // Kept a while for the next reader: a page that moves on and back.
+        const mark = entry.idle
+        yield* Effect.sleep(keep).pipe(
+          Effect.andThen(
+            lock.withPermits(1)(
+              Effect.suspend(() => {
+                if (entry.readers > 0 || entry.idle !== mark || entries.get(key) !== entry) return Effect.void
+                entries.delete(key)
+                return Scope.close(entry.scope, Exit.void)
+              }),
+            ),
+          ),
+          Effect.forkIn(lifetime),
+        )
+      })
+    return (shared: boolean, key: string, make: () => Stream.Stream<A>): Stream.Stream<A> =>
+      !shared
+        ? make()
+        : Stream.unwrap(
+        Effect.map(
+          Effect.acquireRelease(acquire(key, make), entry => release(key, entry)),
+          entry =>
+            SubscriptionRef.changes(entry.latest).pipe(
+              Stream.filter(Option.isSome),
+              Stream.map(value => value.value),
+            ),
+        ),
+      )
+  })
+
 /** A stream preceded by `fallback` when it has emitted nothing after
  *  `timeout`. */
 const withFallback = <A,>(timeout: Duration.Input, fallback: A, content: Stream.Stream<A>) =>
@@ -425,13 +507,16 @@ const stacks = <A>() =>
   Effect.gen(function* () {
     const byId = new Map<string, ReadonlyArray<Readonly<{ seq: number; value: A; owner: string | null }>>>()
     let seq = 0
+    // Grows with every change: shared streams read after a change start anew.
+    let version = 0
     const live = yield* SubscriptionRef.make<ReadonlyArray<A>>([])
-    const publish = Effect.suspend(() =>
-      SubscriptionRef.set(
+    const publish = Effect.suspend(() => {
+      version += 1
+      return SubscriptionRef.set(
         live,
         [...byId.values()].flatMap(stack => stack.slice(-1).map(entry => entry.value)),
-      ),
-    )
+      )
+    })
     const owned = () => [...byId.values()].flatMap(stack => stack.slice(-1))
     const add = (id: string, value: A, owner: string | null): Effect.Effect<void, never, Scope.Scope> =>
       Effect.suspend(() => {
@@ -450,5 +535,5 @@ const stacks = <A>() =>
             }),
         )
       })
-    return { live, add, owned }
+    return { live, add, owned, version: () => version }
   })

@@ -835,7 +835,7 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Contr
               Contributions.use(contributions =>
                 Effect.succeed(
                   contributions
-                    .slotCards(ISSUES_PALETTE, { memberId, issueId, identifier })
+                    .slotCards(ISSUES_PALETTE, { memberId, issueId, identifier }, { shared: true })
                     .pipe(Stream.map(cards => Message.GotPaletteCards({ cards }))),
                 ),
               ),
@@ -850,7 +850,7 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Contr
       dependenciesToStream: () =>
         Stream.unwrap(
           Contributions.use(contributions =>
-            Effect.succeed(contributions.slotBadges(ISSUES_BADGES, {}).pipe(Stream.map(badges => Message.GotBadges({ badges })))),
+            Effect.succeed(contributions.slotBadges(ISSUES_BADGES, {}, { shared: true }).pipe(Stream.map(badges => Message.GotBadges({ badges })))),
           ),
         ),
     },

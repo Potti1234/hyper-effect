@@ -515,7 +515,7 @@ export const subscriptions = Subscription.make<Model, Message, Workspace | Viewe
               Contributions.use(contributions =>
                 Effect.succeed(
                   contributions
-                    .slotCards(ISSUE_SIDEBAR, { issueId, identifier, memberId })
+                    .slotCards(ISSUE_SIDEBAR, { issueId, identifier, memberId }, { shared: true })
                     .pipe(Stream.map(cards => Message.GotExtensionCards({ cards }))),
                 ),
               ),

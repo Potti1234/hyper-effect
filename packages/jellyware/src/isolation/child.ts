@@ -112,8 +112,8 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
           )
           yield* Effect.orDie(peer.scoped('contributions.slot', [{ slot: entry.slot, id: entry.id, key }]))
         }),
-      slotCards: (slot, context) =>
-        peer.stream('contributions.slotCards', [slot, context]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotCard)))),
+      slotCards: (slot, context, read) =>
+        peer.stream('contributions.slotCards', [slot, context, read?.shared === true]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotCard)))),
       badges: <R,>(entry: BadgeEntry<R>) =>
         Effect.gen(function* () {
           const context = yield* Effect.context<R>()
@@ -124,8 +124,8 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
           )
           yield* Effect.orDie(peer.scoped('contributions.badges', [{ slot: entry.slot, id: entry.id, key }]))
         }),
-      slotBadges: (slot, context) =>
-        peer.stream('contributions.slotBadges', [slot, context]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotBadge)))),
+      slotBadges: (slot, context, read) =>
+        peer.stream('contributions.slotBadges', [slot, context, read?.shared === true]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotBadge)))),
       data: <R,>(entry: DataEntry<R>) =>
         Effect.gen(function* () {
           const context = yield* Effect.context<R>()
@@ -136,8 +136,8 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
           )
           yield* Effect.orDie(peer.scoped('contributions.data', [{ slot: entry.slot, id: entry.id, key }]))
         }),
-      slotData: (slot, context) =>
-        peer.stream('contributions.slotData', [slot, context]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotValue)))),
+      slotData: (slot, context, read) =>
+        peer.stream('contributions.slotData', [slot, context, read?.shared === true]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotValue)))),
       command: <R,>(entry: CommandEntry<R>) =>
         Effect.gen(function* () {
           const context = yield* Effect.context<R>()

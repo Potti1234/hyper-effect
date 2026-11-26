@@ -36,17 +36,21 @@ const tailwind = (appDirectory: string) =>
     return Effect.sync(() => child.kill())
   })
 
-export const layer = (options: Readonly<{ appDirectory: string; extensionsDirectory: string }>) =>
+export const layer = (options: Readonly<{ appDirectory: string; extensionsDirectory: string; watchSources?: boolean }>) =>
   Layer.effect(
     StylesheetChanges,
     Effect.gen(function* () {
       const output = join(options.appDirectory, 'public', 'styles.css')
       const version = yield* SubscriptionRef.make(yield* hashOf(output))
       const changed = yield* Queue.sliding<void>(1)
-      yield* Effect.acquireRelease(
-        Effect.sync(() => watch(options.extensionsDirectory, { recursive: true }, () => Queue.offerUnsafe(changed, undefined))),
-        watcher => Effect.sync(() => watcher.close()),
-      )
+      // The extensions, and in development the app's own sources too.
+      const folders = [options.extensionsDirectory, ...(options.watchSources === true ? [join(options.appDirectory, 'src')] : [])]
+      for (const folder of folders) {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => watch(folder, { recursive: true }, () => Queue.offerUnsafe(changed, undefined))),
+          watcher => Effect.sync(() => watcher.close()),
+        )
+      }
       // Wait for a quiet half second, build, and publish a new version when
       // the CSS differs.
       yield* Effect.gen(function* () {

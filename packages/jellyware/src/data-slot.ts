@@ -1,6 +1,6 @@
 import { Effect, Option, Schema as S, type Scope, Stream } from 'effect'
 
-import { Contributions, type SlotContext } from './contributions.ts'
+import { Contributions, type SlotContext, type SlotRead } from './contributions.ts'
 
 /* A data slot with a type: the app names it and gives the Schema of its
    values; extensions add values, the app reads them. Values cross the
@@ -19,7 +19,7 @@ export type DataSlot<A> = Readonly<{
    *  `content` should emit at once and again when the value changes. */
   add: <R>(id: string, content: (context: SlotContext) => Stream.Stream<A, never, R>) => Effect.Effect<void, never, Contributions | Scope.Scope | R>
   /** Every entry's value for a context, now and after every change. */
-  read: (context: SlotContext) => Stream.Stream<ReadonlyArray<Readonly<{ id: string; value: A }>>, never, Contributions>
+  read: (context: SlotContext, read?: SlotRead) => Stream.Stream<ReadonlyArray<Readonly<{ id: string; value: A }>>, never, Contributions>
   /** The values once (the first emission). */
   current: (context: SlotContext) => Effect.Effect<ReadonlyArray<Readonly<{ id: string; value: A }>>, never, Contributions>
 }>
@@ -41,8 +41,8 @@ export const dataSlot = <A, I>(name: string, schema: S.Codec<A, I>): DataSlot<A>
       ),
       list => list.filter((each): each is Value<A> => each !== null),
     )
-  const read = (context: SlotContext): Stream.Stream<ReadonlyArray<Value<A>>, never, Contributions> =>
-    Stream.unwrap(Contributions.use(contributions => Effect.succeed(contributions.slotData(name, context).pipe(Stream.mapEffect(decodeAll)))))
+  const read = (context: SlotContext, options?: SlotRead): Stream.Stream<ReadonlyArray<Value<A>>, never, Contributions> =>
+    Stream.unwrap(Contributions.use(contributions => Effect.succeed(contributions.slotData(name, context, options).pipe(Stream.mapEffect(decodeAll)))))
   return {
     name,
     add: (id, content) =>
