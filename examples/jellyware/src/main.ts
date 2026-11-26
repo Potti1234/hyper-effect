@@ -108,8 +108,8 @@ const Changes = Jellyware.changesLayer({
     Jellyware.importCheck(importRules),
     // New migrations replayed on a copy of the extension's database first.
     Jellyware.migrationsCheck(dataDirectory),
-    Agent.typecheck(appDirectory, workDirectory),
-    Agent.extensionTests(appDirectory),
+    Jellyware.typecheckCheck({ appDirectory, workDirectory }),
+    Jellyware.testsCheck({ appDirectory, workDirectory }),
   ],
   protectedDirectories: [join(appDirectory, 'src')],
   review: true,

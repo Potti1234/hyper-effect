@@ -46,6 +46,8 @@ const run = (id: string, state: Run['state']): Run => ({
   error: state === 'failed' ? 'standup/page.ts(3,1): error TS2322' : null,
   reviewer: null,
   thread: null,
+  options: null,
+  warnings: [],
 })
 
 /** A follow-up of `thread`. */
@@ -118,7 +120,7 @@ const model = (
     extensions: [standup, related],
     settingsChanges,
     members: SEED_MEMBERS,
-    inventory: { nav: [], slots: [], badges: [], commands: [] },
+    inventory: { nav: [], slots: [], badges: [], data: [], commands: [] },
     pages: [],
     mySettings: [relatedMine],
   }).model

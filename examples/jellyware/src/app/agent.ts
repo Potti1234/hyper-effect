@@ -1,14 +1,13 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { Cause, Effect, Option, Queue, Schema as S, Semaphore, Stream } from 'effect'
 
-import { type Agent, AgentError, type AgentEvent, type Check, type RunState, type Task, isTestFile } from '@hyper-effect/jellyware'
+import { type Agent, AgentError, type AgentEvent, type RunState, type Task } from '@hyper-effect/jellyware'
 
 import type { Guard } from '../pi-guard.ts'
 import { importRules } from './extension-rules.ts'
@@ -88,31 +87,6 @@ const piCli = (): string => {
   const root = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', shell: true }).trim()
   return join(root, '@earendil-works', 'pi-coding-agent', 'dist', 'bundle', 'cli.js')
 }
-
-/** Runs a Node program without a shell; answers with stdout, fails with the
- *  end of stderr. */
-const runNode = (args: ReadonlyArray<string>, options: Readonly<{ cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }>) =>
-  Effect.callback<string, string>(resume => {
-    // No stdin: pi in print mode reads piped stdin as more input and would
-    // wait for it to end.
-    const child = spawn(process.execPath, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', chunk => (stdout += String(chunk)))
-    child.stderr.on('data', chunk => (stderr += String(chunk)))
-    const timer = setTimeout(() => child.kill(), options.timeoutMs)
-    child.on('error', error => resume(Effect.fail(String(error))))
-    child.on('close', code => {
-      clearTimeout(timer)
-      resume(code === 0 ? Effect.succeed(stdout) : Effect.fail(`${(stderr || stdout).slice(-4000)}\n(exit ${code})`))
-    })
-    return Effect.sync(() => child.kill())
-  })
 
 /** Runs a Node program without a shell and hands each line of its stdout
  *  to `onLine` as it comes; fails with the end of stderr. */
@@ -423,91 +397,6 @@ const work = (options: PiOptions, credentials: Credentials, { prompt, stage, run
     // The token exists only while a pi runs.
     return yield* Effect.acquireUseRelease(credentials.acquire, () => pi, () => credentials.release)
   })
-
-/** Typechecks the changed extensions of a snapshot against the app,
- *  incrementally (the first run takes a minute or two). */
-/** Typechecks take turns: they share one incremental build file. */
-const typecheckTurns = Semaphore.makeUnsafe(1)
-
-export const typecheck = (appDirectory: string, workDirectory: string): Check => ({
-  name: 'Typecheck',
-  run: input => typecheckTurns.withPermits(1)(typecheckOnce(appDirectory, workDirectory, input)),
-})
-
-const typecheckOnce = (
-  appDirectory: string,
-  workDirectory: string,
-  { snapshot, runDirectory, changed }: Readonly<{ snapshot: string; runDirectory: string; changed: ReadonlyArray<string> }>,
-) =>
-    Effect.gen(function* () {
-      const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc')
-      const config = join(runDirectory, 'tsconfig.json')
-      yield* Effect.promise(() =>
-        writeFile(
-          config,
-          JSON.stringify({
-            extends: join(appDirectory, 'tsconfig.json'),
-            compilerOptions: { incremental: true, tsBuildInfoFile: join(workDirectory, 'tsc.tsbuildinfo') },
-            include: changed.map(id => `${relative(runDirectory, join(snapshot, id)).split('\\').join('/')}/**/*`),
-          }),
-        ),
-      )
-      yield* runNode([tsc, '--noEmit', '-p', config, '--pretty', 'false'], { cwd: appDirectory, timeoutMs: 10 * 60 * 1000 }).pipe(
-        // tsc prints paths relative to the app; the agent knows its stage.
-        Effect.mapError(output => {
-          const prefixes = [resolve(snapshot), relative(appDirectory, snapshot)].flatMap(path => [
-            `${path}\\`,
-            `${path.split('\\').join('/')}/`,
-          ])
-          return prefixes.reduce((text, prefix) => text.split(prefix).join(''), output).slice(0, 6000)
-        }),
-      )
-  })
-
-/** Environment variables the tests get: what Node and the test runner
- *  need, none of the server's secrets. */
-const TEST_ENVIRONMENT = ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'windir', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE']
-
-/** Runs the tests (`*.test.ts`) of the changed extensions of a snapshot
- *  with the app's test runner, in a child process whose environment holds
- *  none of the server's variables. An extension without tests passes. */
-export const extensionTests = (appDirectory: string): Check => ({
-  name: 'Tests',
-  run: ({ snapshot, runDirectory, changed }) =>
-    Effect.gen(function* () {
-      const files = yield* Effect.promise(async () => {
-        const found: Array<string> = []
-        for (const id of changed) {
-          const entries = await readdir(join(snapshot, id), { recursive: true }).catch(() => [])
-          for (const entry of entries) if (isTestFile(entry)) found.push(join(snapshot, id, entry))
-        }
-        return found
-      })
-      if (files.length === 0) return
-      const slash = (path: string) => path.split('\\').join('/')
-      const config = join(runDirectory, 'vitest.config.mjs')
-      yield* Effect.promise(() =>
-        writeFile(
-          config,
-          `export default ${JSON.stringify({
-            resolve: { alias: { '@': slash(join(appDirectory, 'src')) } },
-            test: { name: 'extension-tests', root: slash(appDirectory), include: files.map(file => slash(relative(appDirectory, file))) },
-          })}\n`,
-        ),
-      )
-      // Its command-line entry (`bin`), which the package does not export.
-      const vitest = join(dirname(createRequire(import.meta.url).resolve('vitest/package.json')), 'vitest.mjs')
-      const env: NodeJS.ProcessEnv = { NODE_ENV: 'test', NO_COLOR: '1', FORCE_COLOR: '0', CI: '1' }
-      for (const key of TEST_ENVIRONMENT) if (process.env[key] !== undefined) env[key] = process.env[key]
-      yield* runNode([vitest, 'run', '--config', config, '--root', appDirectory], { cwd: appDirectory, env, timeoutMs: 5 * 60 * 1000 }).pipe(
-        // Paths as the agent knows them: relative to its stage.
-        Effect.mapError(output => {
-          const prefixes = [resolve(snapshot), relative(appDirectory, snapshot)].flatMap(path => [`${path}\\`, `${slash(path)}/`])
-          return prefixes.reduce((text, prefix) => text.split(prefix).join(''), output).slice(-6000)
-        }),
-      )
-    }),
-})
 
 /** An agent without a model, for browser checks: a prompt
  *  `replace <file> :: <old> => <new>` replaces text in a stage file. Its
