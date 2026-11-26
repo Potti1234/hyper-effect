@@ -89,9 +89,9 @@ const run = <A, E>(effect: Effect.Effect<A, E, Changes | Contributions>) => Effe
 const labels = () => run(Effect.flatMap(Contributions, c => c.navEntries)).then(entries => entries.map(entry => entry.label))
 
 /** Starts a run and waits until it is over. */
-const change = async (prompt: string, does: (task: Task) => Promise<string>): Promise<Run> => {
+const change = async (prompt: string, does: (task: Task) => Promise<string>, options?: { agent: string }): Promise<Run> => {
   agent = does
-  const id = await run(Effect.flatMap(Changes, changes => changes.start(prompt, 'Ada')))
+  const id = await run(Effect.flatMap(Changes, changes => changes.start(prompt, 'Ada', undefined, options)))
   for (let i = 0; i < 200; i++) {
     const found = (await run(Effect.flatMap(Changes, changes => changes.current))).find(other => other.id === id)
     if (found !== undefined && ['installed', 'unchanged', 'failed', 'undone'].includes(found.state)) return found
@@ -143,9 +143,18 @@ describe('changes', () => {
           assert.include(tasks.at(-1)?.feedback ?? '', 'no database')
           assert.deepStrictEqual(await labels(), ['With database'])
 
-          // Nothing changed: nothing to install.
-          const unchanged = await change('Just look', async () => 'Looked.')
+          // Nothing changed: nothing to install. The run's options reach the agent.
+          const unchanged = await change(
+            'Just look',
+            async task => {
+              assert.deepStrictEqual(task.options, { agent: 'pi' })
+              assert.isFalse(task.resumed)
+              return 'Looked.'
+            },
+            { agent: 'pi' },
+          )
           assert.strictEqual(unchanged.state, 'unchanged')
+          assert.deepStrictEqual(unchanged.options, { agent: 'pi' })
 
           // A new extension.
           const added = await change('Add a second entry', async task => {
@@ -182,6 +191,8 @@ describe('changes', () => {
           })
           assert.strictEqual(outside.state, 'failed')
           assert.include(outside.error ?? '', 'outside the extensions')
+          // It names the file.
+          assert.include(outside.error ?? '', 'src/app.ts')
           assert.deepStrictEqual(await labels(), ['Hey'])
 
           // A live extension changed meanwhile: the run is refused.

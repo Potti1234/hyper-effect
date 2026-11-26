@@ -61,6 +61,10 @@ export default Layer.effectDiscard(
       run: () => Effect.try({ try: () => readFileSync(${JSON.stringify(secretFile.replaceAll('\\', '/'))}, 'utf8'), catch: error => String((error as { code?: string }).code) }),
     })
     yield* contributions.command({
+      id: 'counter.where',
+      run: ({ context }) => Effect.succeed('for ' + (context?.['thread'] ?? 'nobody')),
+    })
+    yield* contributions.command({
       id: 'counter.block',
       run: () => Effect.sync(() => { const end = Date.now() + 60_000; while (Date.now() < end); return 'never' }),
     })
@@ -134,6 +138,9 @@ describe('extensions in a process of their own', () => {
       assert.strictEqual(card?.title, 'Count 0')
       assert.notStrictEqual(card?.note, `pid ${process.pid}`)
       assert.strictEqual(yield* contributions.run('counter.add', { args: { n: 2 }, memberId: 'ada' }), 'Now 2')
+      // The caller's context crosses to the process.
+      assert.strictEqual(yield* contributions.run('counter.where', { args: null, memberId: 'ada', context: { thread: 't1' } }), 'for t1')
+      assert.strictEqual(yield* contributions.run('counter.where', { args: null, memberId: 'ada' }), 'for nobody')
       assert.strictEqual(
         yield* Effect.flip(contributions.run('counter.add', { args: { n: 9 }, memberId: 'ada' })),
         'Refused: at most 5 at once',

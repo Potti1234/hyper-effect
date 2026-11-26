@@ -46,7 +46,7 @@ const HttpRequest = S.Struct({
 })
 
 const SlotContext = S.Record(S.String, S.String)
-const CommandInput = S.Struct({ args: S.Json, memberId: S.String })
+const CommandInput = S.Struct({ args: S.Json, memberId: S.String, context: S.optionalKey(S.Record(S.String, S.String)) })
 const Values = S.Record(S.String, S.Union([S.String, S.Number, S.Boolean]))
 const HostedPage = S.Struct({ name: S.String, paths: S.Array(S.String), owner: S.NullOr(S.String) })
 const Rows = S.Array(S.Record(S.String, SqlValueSchema))

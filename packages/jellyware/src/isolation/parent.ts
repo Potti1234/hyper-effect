@@ -136,7 +136,7 @@ const MountRequest = S.Struct({ mountId: S.Number, name: S.String, paths: S.Arra
 const Registration = S.Struct({ slot: S.String, id: S.String, key: S.String })
 const CommandRegistration = S.Struct({ id: S.String, roles: S.NullOr(S.Array(S.String)) })
 const SlotContext = S.Record(S.String, S.String)
-const CommandInput = S.Struct({ args: S.Json, memberId: S.String })
+const CommandInput = S.Struct({ args: S.Json, memberId: S.String, context: S.optionalKey(S.Record(S.String, S.String)) })
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length'])
 

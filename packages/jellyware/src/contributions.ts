@@ -127,8 +127,11 @@ export type BadgeEntry<R = never> = Readonly<{
   content: (context: SlotContext) => Stream.Stream<ReadonlyArray<Badge>, never, R>
 }>
 
-/** Who runs a command, and with what. */
-export type CommandInput = Readonly<{ args: S.Json; memberId: string }>
+/** Who runs a command, and with what. `context` is what the caller knows
+ *  of where it runs, as strings (the thread an agent's tool works for, the
+ *  page an action was clicked on); each app documents its keys, as for
+ *  slots. A command must not trust it more than `args`. */
+export type CommandInput = Readonly<{ args: S.Json; memberId: string; context?: SlotContext }>
 
 export type CommandEntry<R = never> = Readonly<{
   id: string

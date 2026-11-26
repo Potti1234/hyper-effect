@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 
 import { Clock, Context, Data, Effect, Layer, Queue, Schema as S, Semaphore, Stream, SubscriptionRef } from 'effect'
 
@@ -87,6 +88,12 @@ export const Run = S.Struct({
   /** The first run of the conversation this run follows up; null for the
    *  first run of one. */
   thread: S.NullOr(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
+  /** What the app passed to `start` for the agent (which agent, which
+   *  model); a follow-up without its own keeps the run's before it. */
+  options: S.NullOr(S.Json).pipe(S.withDecodingDefaultKey(Effect.succeed(null))),
+  /** What a reviewer should know besides the diff, such as files outside
+   *  the extensions that changed while the agent worked. */
+  warnings: S.Array(S.String).pipe(S.withDecodingDefaultKey(Effect.succeed([]))),
 })
 export type Run = typeof Run.Type
 
@@ -152,6 +159,11 @@ export type Task = Readonly<{
   /** Reports progress (what it says, the tools it calls) to the run's
    *  activity. */
   report: (event: AgentEvent) => Effect.Effect<void>
+  /** The run's options from `start` (or its conversation's); null without. */
+  options: S.Json | null
+  /** Whether the app restarted while the agent worked on this run: the
+   *  stage still has what it did so far. */
+  resumed: boolean
 }>
 
 /** Works on the stage until it is done; answers with a summary. */
@@ -180,7 +192,7 @@ export class Changes extends Context.Service<
     /** Queues a run; up to `concurrency` work at a time. Answers with its
      *  id. With `thread` (a run id), it follows up that run's conversation:
      *  the agent carries on from the newest run in it, which must be over. */
-    readonly start: (prompt: string, author: string, thread?: string) => Effect.Effect<string, StartRefused>
+    readonly start: (prompt: string, author: string, thread?: string, options?: S.Json) => Effect.Effect<string, StartRefused>
     /** What happened in a run so far, now and after every change. */
     readonly activity: (runId: string) => Stream.Stream<ReadonlyArray<Activity>>
     readonly undo: (runId: string) => Effect.Effect<void, UndoRefused>
@@ -202,9 +214,15 @@ export type Options<R = never> = Readonly<{
   workDirectory: string
   agent: Agent
   checks: ReadonlyArray<Check>
-  /** Folders the agent must not change (the app's own sources); a run that
-   *  changed them fails. */
+  /** Folders the agent must not change (the app's own sources). Files in
+   *  them that change while the agent works fail the run; with `review`,
+   *  the run goes on to review with a warning that names them instead (a
+   *  person may have changed them meanwhile, and the reviewer can tell). */
   protectedDirectories?: ReadonlyArray<string>
+  /** Whether runs the app stopped during (queued, working or checking) carry
+   *  on when it starts again, from the stage they left. Default true; false
+   *  fails them. */
+  resume?: boolean
   /** How often the agent may work on one run, retries included. Default 3. */
   attempts?: number
   /** How many runs may work at a time; more wait in `queued`. Default 1.
@@ -302,8 +320,29 @@ const hashesOf = (directory: string, ids: Iterable<string>) =>
     return hashes
   })
 
+/** Every file under the directories with a hash of its content, by path. */
 const hashTree = (directories: ReadonlyArray<string>) =>
-  Effect.promise(async () => (await Promise.all(directories.map(hashFolder))).join(','))
+  Effect.promise(async () => {
+    const hashes = new Map<string, string>()
+    for (const directory of directories) {
+      for (const file of await listFiles(directory)) {
+        const content = await readFile(join(directory, file)).catch(() => null)
+        if (content !== null) hashes.set(join(directory, file), createHash('sha256').update(content).digest('hex'))
+      }
+    }
+    return hashes
+  })
+
+/** The paths whose content differs between two `hashTree`s, shortened to
+ *  start at the protected folder's name. */
+const changedFiles = (before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>, directories: ReadonlyArray<string>) => {
+  const paths = new Set([...before.keys(), ...after.keys()])
+  const short = (path: string) => {
+    const root = directories.find(directory => path.startsWith(directory))
+    return root === undefined ? path : relative(dirname(root), path).split(sep).join('/')
+  }
+  return [...paths].filter(path => before.get(path) !== after.get(path)).map(short).sort()
+}
 
 const encodeRun = S.encodeEffect(S.fromJsonString(Run))
 const decodeRun = S.decodeUnknownEffect(S.fromJsonString(Run))
@@ -335,6 +374,11 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
       const work = resolve(options.workDirectory)
       const runsDirectory = join(work, 'runs')
       const maxAttempts = options.attempts ?? 3
+      // Checks resolve the app's modules from a run's snapshot: outside the
+      // app's folder, package imports (`#app/...`) and types are not found.
+      if (relative(dirname(live), work).startsWith('..')) {
+        yield* Effect.logWarning(`jellyware: runs live outside the app's folder (${work}); typechecks and tests of a run may not find the app's modules`)
+      }
       const protectedDirectories = (options.protectedDirectories ?? []).map(directory => resolve(directory))
       yield* Effect.promise(() => mkdir(runsDirectory, { recursive: true }))
 
@@ -416,7 +460,9 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           yield* reloadAll(changes.map(change => change.id))
         })
 
-      // Runs interrupted while installing: put back what they changed.
+      // Runs interrupted while installing: put back what they changed. Runs
+      // interrupted while the agent worked carry on (`resume`).
+      const resumable: Array<Run> = []
       for (const id of yield* Effect.promise(() => listFolders(runsDirectory))) {
         const text = yield* Effect.promise(() => readFile(join(directoryOf(id), 'run.json'), 'utf8').catch(() => null))
         if (text === null) continue
@@ -428,6 +474,11 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           run = { ...run, state: 'failed', error: 'Interrupted while installing; the extensions were put back.' }
           yield* Effect.logWarning(`jellyware: run ${run.id} was interrupted while installing; put back`)
         } else if (run.state === 'queued' || run.state === 'working' || run.state === 'checking') {
+          if (options.resume !== false) {
+            // It carries on once the queue runs, from the stage it left.
+            resumable.push(run)
+            continue
+          }
           run = { ...run, state: 'failed', error: 'Interrupted: the app stopped during the run.' }
         } else if (run.state === 'review' && (yield* Effect.promise(() => hashFolder(join(directoryOf(id), 'snapshot')))) === null) {
           run = { ...run, state: 'failed', error: 'The snapshot to review is gone.' }
@@ -525,7 +576,7 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
           yield* step(run.id, stepId, `Installed ${ids.join(', ')}: live now`, 'done')
         })
 
-      const execute = (queued: Run) =>
+      const execute = (queued: Run, resumed = false) =>
         Effect.gen(function* () {
           const runDirectory = directoryOf(queued.id)
           const stage = join(runDirectory, 'stage')
@@ -535,7 +586,10 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
 
           const guide = yield* describeApp
           const baseline = yield* hashesOf(live, yield* Effect.promise(() => listFolders(live)))
-          yield* Effect.promise(() => copyFolder(live, stage))
+          // A run that carries on keeps the stage it left.
+          const keepStage = resumed && (yield* Effect.promise(() => stat(stage).then(() => true, () => false)))
+          if (keepStage) yield* step(run.id, `resumed-${run.attempts}`, 'The app restarted while the agent worked; it carries on', 'info')
+          else yield* Effect.promise(() => copyFolder(live, stage))
           const guarded = yield* hashTree(protectedDirectories)
           // The newest run before this one in its conversation.
           const earlier = (yield* SubscriptionRef.get(runs)).find(
@@ -568,7 +622,9 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
               save(next),
             )
 
-          let feedback: string | null = null
+          let feedback: string | null = keepStage
+            ? 'The app restarted while you worked on this. The current directory has what you did so far: check it, finish the change, and answer as before.'
+            : null
           while (true) {
             run = { ...run, state: 'working', attempts: run.attempts + 1 }
             yield* save(run)
@@ -576,19 +632,29 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
             const workingText = run.attempts === 1 ? 'The agent works on the change' : `The agent works on what failed (attempt ${run.attempts})`
             yield* step(run.id, working, workingText, 'running')
             const answer: string = yield* options.agent
-              .work({ prompt: run.prompt, stage, runDirectory, feedback, guide, previous, report: reportTo(run.id, run.attempts) })
+              .work({ prompt: run.prompt, stage, runDirectory, feedback, guide, previous, report: reportTo(run.id, run.attempts), options: run.options, resumed: keepStage })
               .pipe(Effect.tapError(error => step(run.id, working, workingText, 'failed', error.message)))
             yield* step(run.id, working, workingText, 'done')
             const { declared, summary } = options.declaredChanges === true ? parseDeclared(answer) : { declared: null, summary: answer }
             run = { ...run, summary, state: 'checking' }
             yield* save(run)
 
-            if ((yield* hashTree(protectedDirectories)) !== guarded) {
-              return yield* end({
-                ...run,
-                state: 'failed',
-                error: 'The agent changed files outside the extensions. Nothing was installed; check the app sources.',
-              })
+            const outside = changedFiles(guarded, yield* hashTree(protectedDirectories), protectedDirectories)
+            if (outside.length > 0) {
+              const list = outside.slice(0, 30).map(path => `- ${path}`).join('\n')
+              if (options.review !== true) {
+                return yield* end({
+                  ...run,
+                  state: 'failed',
+                  error: `Files outside the extensions changed while the agent worked. Nothing was installed; check them:\n${list}`,
+                })
+              }
+              // Someone may have changed them meanwhile: the reviewer decides.
+              const warning = `Files outside the extensions changed while the agent worked (by the agent, or by someone else meanwhile); nothing of them is undone:\n${list}`
+              if (!run.warnings.includes(warning)) {
+                run = { ...run, warnings: [...run.warnings, warning] }
+                yield* step(run.id, `outside-${run.attempts}`, 'Files outside the extensions changed while the agent worked', 'failed', list)
+              }
             }
 
             yield* Effect.promise(() => rm(snapshot, { recursive: true, force: true }))
@@ -667,17 +733,25 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
       yield* Effect.gen(function* () {
         yield* slots.take(1)
         const next = yield* Queue.take(queue)
-        yield* execute(next).pipe(Effect.ensuring(slots.release(1)), Effect.forkIn(runScope))
+        const { resumed, ...run } = next as Run & { resumed?: boolean }
+        yield* execute(run, resumed === true).pipe(Effect.ensuring(slots.release(1)), Effect.forkIn(runScope))
       }).pipe(Effect.forever, Effect.forkScoped)
+      // Runs the app stopped during carry on, oldest first.
+      for (const run of resumable.sort((a, b) => a.startedAt - b.startedAt)) {
+        yield* Effect.logInfo(`jellyware: run ${run.id} carries on after a restart`)
+        yield* save(run)
+        yield* Queue.offer(queue, { ...run, resumed: true } as Run)
+      }
 
       return Changes.of({
         changes: SubscriptionRef.changes(runs),
         current: SubscriptionRef.get(runs),
-        start: (prompt, author, thread) =>
+        start: (prompt, author, thread, runOptions) =>
           Effect.gen(function* () {
             // A follow-up joins the conversation of the run it names, once
             // the newest run there is over.
             let root: string | null = null
+            let inherited: S.Json | null = null
             if (thread !== undefined) {
               const list = yield* SubscriptionRef.get(runs)
               const named = list.find(other => other.id === thread)
@@ -687,6 +761,7 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
               if (newest !== undefined && BUSY.has(newest.state)) {
                 return yield* new StartRefused({ message: 'The agent is still working on this conversation. Wait until it is done.' })
               }
+              inherited = newest?.options ?? null
             }
             const now = yield* Clock.currentTimeMillis
             const id = `${new Date(now).toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`
@@ -704,6 +779,8 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
               error: null,
               reviewer: null,
               thread: root,
+              options: runOptions ?? inherited,
+              warnings: [],
             }
             yield* save(run)
             yield* Queue.offer(queue, run)
