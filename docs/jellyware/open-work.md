@@ -276,7 +276,7 @@ Tests: chart geometry, the chart and calendar programs (Story); islands built pe
 
 What is still open from Fractal's list:
 
-- **Extension pages are other programs.** Going from the app's page to an extension's page is a full page load, and each page renders the app's frame (`frame` in Fractal, the shell in the example). bb's plugin panels open inside the app. It needs a way for one session to show another program's view in a region: a sub-program, with its own Model, Messages and snapshot, inside the app's page.
+- **Extension pages are other programs.** Each page renders the app's frame (`frame` in Fractal, the shell in the example), and moving between the app's page and an extension's page started a new document. Core's `softNavigation` now moves between programs without a page load (the body is swapped, the old session's stream ends, the new page starts its own); Fractal uses it for every page. Still open: showing an extension's page inside the app's page itself, as bb's plugin panels do, which needs a sub-program in a region, with its own Model, Messages and snapshot.
 - **The app's types are part of the extension API.** Adding a required field to a type extensions build (Fractal's `Turn`) broke two extensions' tests. Keep new fields optional, and typecheck `extensions/` with the app (both apps' `tsconfig.json` include it).
 - **Facades are the app's work.** An extension in its own process reaches only the members of the app's services listed in `remote.ts`; everything an extension page's frame shows must be in them.
 
@@ -308,4 +308,4 @@ Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 13 on
 | # | Work | Why | Where it was described |
 |---|---|---|---|
 | 14 | **Several servers.** Extensions and runs in the shared store (Postgres); a change feed tells every server to load a new version | [One server, one folder](#one-server-one-folder) | above |
-| 16 | **Extension pages inside the app's page.** A sub-program in a region: an extension's page shown in the app's frame without a page load, as bb's plugin panels | Full page loads between the app and extensions' pages | [found by Fractal](#found-by-fractal-a-bb-replica-built-2026-11-26) |
+| 16 | **Extension pages inside the app's page.** A sub-program in a region: an extension's page shown in the app's own page, as bb's plugin panels. Moving between programs without a page load is done (core's `softNavigation`, 2026-11-26) | Each program renders the app's frame; state of the app's page (a draft, the open panel) is left behind when an extension's page shows | [found by Fractal](#found-by-fractal-a-bb-replica-built-2026-11-26) |

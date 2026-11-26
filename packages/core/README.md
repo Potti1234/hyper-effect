@@ -46,6 +46,8 @@ A `Program` is Foldkit's application shape plus what a server needs:
 | `trustProxy` | `0` | Proxies whose `X-Forwarded-For` / `X-Forwarded-Host` entries count |
 | `node` | none | This process's name when several serve one app: session ids become `<node>.<uuid>`, for routing (`nodeOfPath`) |
 | `allowedOrigins` | `[]` | Extra origins allowed to post events |
+| `prefetch` | none | URL patterns whose links the browser prefetches when the pointer rests on them, without starting a session |
+| `softNavigation` | none | URL patterns of other hyper-effect pages this page moves to without a page load (its body is swapped, its stream ends, the new page starts its own); for apps whose pages share a frame across programs |
 | `limits` | see `server.ts` | Body size, event rate, page rate per client, upload bytes and files, sessions per visitor and per program |
 
 `Program.snapshotDeps` (on the program, not an option) names the session's own state; outside events, snapshots are written only when it, or the intake position, changes.
