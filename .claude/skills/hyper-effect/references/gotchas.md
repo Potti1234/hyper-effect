@@ -21,6 +21,7 @@ Each of these broke something during hyper-effect's development or experiments. 
 - **Not supported:** `OnPastePreventDefault`, `OnBeforeInputPreventDefault`, `OnMount`. Use an island for anything that needs the DOM.
 - **A key with modifiers on an element does nothing** (`OnKeyDownPreventDefault` returning Some only for Ctrl+Enter). Those handlers are probed at render time without modifiers. Use `keyBindings` with `whileTyping: 'Allow'`.
 - **Shortcuts on `<body>` never fire.** Element key handlers only see keys while the element (or a child) has focus, and the view renders inside `<body>`. Use `keyBindings`.
+- **A menu's items do not take clicks.** A full-screen backdrop that closes the menu on a click outside sits above the menu when the menu's container stacks lower (`z-30` backdrop, `z-20` form). Give the container of the menu and its trigger a higher z-index than the backdrop (`relative z-40`).
 - **Menus feel slow over a network.** Every hover or arrow key in a server-side Submodel is a round trip. Use `activateOnHover: false` on crease menus; `docs/design-latency.md` has what comes next.
 
 ## Commands
@@ -38,6 +39,12 @@ Each of these broke something during hyper-effect's development or experiments. 
 - **Shared data in snapshots.** Leave it out of `snapshotDeps`; the Subscription delivers it again after a restore. Otherwise every shared change rewrites every session's snapshot.
 - **Two layers with the same `program.name`** share endpoints and snapshots. Every page needs its own name, also when one program serves several paths (export a `makeProgram(name)`, as the clone's `issues/page.ts` does).
 - **Sessions end.** A tab that is closed (or loses its connection) for longer than `idleTimeout` (2 minutes) loses its session; reopening loads the page anew from flags. Keep durable state in stores, not in a page's Model.
+
+## Layers and routes
+
+- **"Layer … is not assignable to … never" at `Layer.launch`,** with a page of types. A part of the composition still needs a service. Wrap the parts with `provided(...)` from `@hyper-effect/core`: the error moves to the part that needs it and names the service.
+- **A route whose handler uses a service leaves `Request<"Requires", S>`,** which no layer provides (an `HttpRouter.add` handler is built per request). Read the service while building the route: `Layer.unwrap(S.use(service => Effect.succeed(HttpRouter.add('POST', '/x', handler(service)))))`.
+- **New Tailwind classes in `src/` stay unstyled while the server runs.** The stylesheet is built at start; an app that rebuilds it for extensions (jellyware's example, `styles.ts`) should watch `src/` too in development (`watchSources`).
 
 ## Running and measuring
 

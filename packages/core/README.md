@@ -28,7 +28,7 @@ A `Program` is Foldkit's application shape plus what a server needs:
 
 | Entry | Contents |
 |---|---|
-| `@hyper-effect/core` | `layer`, `Options`, `Limits`, `Program`, `PageRequest`, `PageNotFound`, `PageRedirect`, `RequestContext`, `ContentSecurityPolicy`, `Secret`, `region`, `shared`, `keyBindings`, `sampleLatest`, `memoizeLast`, `nodeOfPath`, `fileStore`, `sqlStore`, `foldkitUiCommands`, `metricsRoutes` |
+| `@hyper-effect/core` | `layer`, `Options`, `Limits`, `Program`, `PageRequest`, `PageNotFound`, `PageRedirect`, `RequestContext`, `ContentSecurityPolicy`, `Secret`, `region`, `shared`, `keyBindings`, `sampleLatest`, `memoizeLast`, `provided` and `Needs` (finding what a composed layer still needs), `nodeOfPath`, `fileStore`, `sqlStore`, `foldkitUiCommands`, `metricsRoutes` |
 | `@hyper-effect/core/binding` | Event-to-Datastar rewriting, for packages that render their own elements (islands) |
 | `@hyper-effect/core/builder` | The server `HtmlBuilder` and `binderOf` |
 | `@hyper-effect/core/testing` | `serve` (with the program's services as a Layer), `openPage`, `postEvent`, `openStream`, `readUntil`, `makeStore`, `waitForSnapshot`, `token`, `renderModel` |
