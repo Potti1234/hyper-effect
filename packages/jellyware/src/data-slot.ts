@@ -26,10 +26,10 @@ export type DataSlot<A> = Readonly<{
 
 type Value<A> = Readonly<{ id: string; value: A }>
 
-export const dataSlot = <A, I, RD = never, RE = never>(name: string, schema: S.Codec<A, I, RD, RE>): DataSlot<A> => {
-  const json = S.toCodecJson(schema as unknown as S.Codec<A, I>)
-  const encode = S.encodeUnknownEffect(json) as (value: A) => Effect.Effect<S.Json, S.SchemaError>
-  const decode = S.decodeUnknownEffect(json) as (value: unknown) => Effect.Effect<A, S.SchemaError>
+export const dataSlot = <A, I>(name: string, schema: S.Codec<A, I>): DataSlot<A> => {
+  const json = S.toCodecJson(schema)
+  const encode = S.encodeEffect(json)
+  const decode = S.decodeUnknownEffect(json)
   /** The values that decode; the others are left out with a warning. */
   const decodeAll = (values: ReadonlyArray<Readonly<{ id: string; value: S.Json }>>): Effect.Effect<ReadonlyArray<Value<A>>> =>
     Effect.map(

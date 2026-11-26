@@ -2,7 +2,7 @@ import { type ChildProcess, fork } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { build } from 'esbuild'
@@ -54,6 +54,13 @@ export type IsolationOptions = Readonly<{
   servicesModule: string
   /** The tsconfig for path aliases of the app's modules. */
   tsconfig?: string
+  /** Modules that must never end up in an extension's bundle, however it
+   *  imports them: the app's files that hold its state or secrets (its
+   *  store, its agent runtime) as paths, and modules such as `node:sqlite`
+   *  by name. A bundle that includes one fails to build, naming the chain
+   *  of imports that pulled it in. The import check sees an extension's
+   *  own imports only; this sees everything they import in turn. */
+  forbidden?: ReadonlyArray<string>
   /** Who is signed in, for a request forwarded to an extension's page. */
   identify: (request: HttpServerRequest.HttpServerRequest) => Effect.Effect<string | undefined>
   /** Environment variables of an extension's process, besides the few Node
@@ -82,12 +89,44 @@ const serializerPath = () =>
 
 const slash = (path: string) => path.split('\\').join('/')
 
-/** Bundles one version of an extension; fails with esbuild's message. */
-const bundle = (entry: string, servicesModule: string, outfile: string, tsconfig: string | undefined) =>
+type Metafile = Readonly<{ inputs: Readonly<Record<string, Readonly<{ imports: ReadonlyArray<Readonly<{ path: string; external?: boolean }>> }>>> }>
+
+/** The chain of imports from the bundle's entry to the first forbidden
+ *  module in it, or null when there is none. */
+export const forbiddenChain = (metafile: Metafile, forbidden: ReadonlyArray<string>, cwd = process.cwd()): ReadonlyArray<string> | null => {
+  if (forbidden.length === 0) return null
+  const normal = (path: string) => slash(resolve(cwd, path)).toLowerCase()
+  const banned = new Set(forbidden.map(each => (each.includes(':') && !/^[a-z]:[\\/]/i.test(each) ? each.toLowerCase() : normal(each))))
+  const isBanned = (path: string, external: boolean) => banned.has(external ? path.toLowerCase() : normal(path))
+  // Breadth first from the entry (esbuild calls stdin `<stdin>`).
+  const start = Object.keys(metafile.inputs).find(path => path === '<stdin>' || path.endsWith('extension-process.ts')) ?? Object.keys(metafile.inputs)[0]
+  if (start === undefined) return null
+  const parents = new Map<string, string | null>([[start, null]])
+  const queue = [start]
+  while (queue.length > 0) {
+    const current = queue.shift() ?? ''
+    for (const next of metafile.inputs[current]?.imports ?? []) {
+      if (parents.has(next.path)) continue
+      parents.set(next.path, current)
+      if (isBanned(next.path, next.external === true)) {
+        const chain: Array<string> = []
+        for (let at: string | null = next.path; at !== null; at = parents.get(at) ?? null) chain.unshift(at)
+        return chain.slice(1)
+      }
+      if (next.external !== true) queue.push(next.path)
+    }
+  }
+  return null
+}
+
+/** Bundles one version of an extension; fails with esbuild's message, or
+ *  with the chain that pulled in a forbidden module. */
+const bundle = (entry: string, servicesModule: string, outfile: string, tsconfig: string | undefined, forbidden: ReadonlyArray<string> = []) =>
   Effect.tryPromise({
     try: async () => {
       const serializer = serializerPath()
-      await build({
+      const result = await build({
+        metafile: true,
         stdin: {
           contents: [
             `import extension from ${JSON.stringify(slash(entry))}`,
@@ -126,6 +165,12 @@ const bundle = (entry: string, servicesModule: string, outfile: string, tsconfig
           },
         ],
       })
+      const chain = forbiddenChain(result.metafile, forbidden)
+      if (chain !== null) {
+        throw new Error(
+          `it includes ${chain.at(-1) ?? ''}, which extensions must not use (it holds the app's own state). It comes in through:\n  ${chain.join('\n  imports ')}\nImport what the app offers extensions instead.`,
+        )
+      }
     },
     catch: error =>
       `The extension could not be bundled: ${typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error)}`,
@@ -235,7 +280,7 @@ export const isolatedExtension = (
         () => Effect.promise(() => rm(folder, { recursive: true, force: true }).catch(() => undefined)),
       )
       const file = join(folder, 'extension.mjs')
-      yield* bundle(input.entry, options.servicesModule, file, options.tsconfig)
+      yield* bundle(input.entry, options.servicesModule, file, options.tsconfig, options.forbidden)
 
       const environment: Record<string, string> = { JELLYWARE_ISOLATED: '1', NODE_ENV: process.env['NODE_ENV'] ?? 'development' }
       for (const key of BASE_ENVIRONMENT) {

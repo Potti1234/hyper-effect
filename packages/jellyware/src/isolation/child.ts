@@ -5,7 +5,7 @@ import { KeyValueStore } from 'effect/persistence'
 import { PageHost, StylesheetChanges, servedPage } from '@hyper-effect/core'
 
 import { type BadgeEntry, type CommandEntry, Contributions, type DataEntry, Inventory, NavEntry, SlotBadge, SlotCard, type SlotEntry, SlotValue } from '../contributions.ts'
-import { DataError, ExtensionData, SqlValueSchema } from '../data.ts'
+import { DataError, ExtensionData, SqlValueSchema } from '../data-service.ts'
 import { ExtensionIslands } from '../islands/view.ts'
 import { ExtensionSettings, type SettingValues, valuesOf } from '../settings.ts'
 import { type Handler, type Peer, decodeOrDie, make } from './bridge.ts'

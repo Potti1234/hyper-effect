@@ -4,7 +4,7 @@ import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { Context, Data, Effect, Schema as S, type Stream, SubscriptionRef } from 'effect'
+import { Effect, Schema as S, SubscriptionRef } from 'effect'
 
 import type { Check } from './changes.ts'
 
@@ -26,34 +26,8 @@ import type { Check } from './changes.ts'
    to rows: no schema changes outside migrations, no `ATTACH` of other
    files, no `PRAGMA`, no writes to the table of applied migrations. */
 
-export type SqlValue = string | number | bigint | null | Uint8Array
-
-export const SqlValueSchema = S.Union([S.String, S.Number, S.BigInt, S.Null, S.Uint8Array])
-
-export class DataError extends Data.TaggedError('DataError')<{ readonly message: string }> {}
-
-export type Row = Readonly<Record<string, SqlValue>>
-
-export class ExtensionData extends Context.Service<
-  ExtensionData,
-  {
-    /** Rows of a `SELECT`, with `?` parameters. */
-    readonly query: (sql: string, params?: ReadonlyArray<SqlValue>) => Effect.Effect<ReadonlyArray<Row>, DataError>
-    /** An `INSERT`, `UPDATE` or `DELETE`; answers with the rows changed. */
-    readonly run: (sql: string, params?: ReadonlyArray<SqlValue>) => Effect.Effect<number, DataError>
-    /** A number that grows with every write of this extension, now and
-     *  after each write (from any of its versions): query again on it. */
-    readonly changes: Stream.Stream<number>
-  }
->()('@hyper-effect/jellyware/ExtensionData') {}
-
-/** What an extension's database holds, for the workshop and the guide. */
-export const DataSummary = S.Struct({
-  /** Applied migrations. */
-  migrations: S.Number,
-  tables: S.Array(S.Struct({ name: S.String, columns: S.Array(S.String) })),
-})
-export type DataSummary = typeof DataSummary.Type
+export { DataError, DataSummary, ExtensionData, type Row, type SqlValue, SqlValueSchema } from './data-service.ts'
+import { DataError, type DataSummary, ExtensionData } from './data-service.ts'
 
 const MIGRATIONS = '_jellyware_migrations'
 

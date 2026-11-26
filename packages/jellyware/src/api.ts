@@ -25,7 +25,7 @@ export {
   SlotValue,
 } from './contributions.ts'
 export { type DataSlot, dataSlot } from './data-slot.ts'
-export { DataError, ExtensionData, type Row, type SqlValue } from './data.ts'
+export { DataError, ExtensionData, type Row, type SqlValue } from './data-service.ts'
 export { type IslandSpec, defineIsland, islandPorts } from './islands/contract.ts'
 export { ExtensionIslands, type IslandViewConfig, islandView } from './islands/view.ts'
 export { ExtensionSettings, SettingField, SettingSpec, type SettingValue, type SettingValues, isMemberSetting } from './settings.ts'

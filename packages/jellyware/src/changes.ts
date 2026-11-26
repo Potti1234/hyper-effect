@@ -727,20 +727,19 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
       // Up to `concurrency` runs at a time, started in the order they came.
       // Each works on its own stage; installs take turns (installLock), and
       // a run whose extensions changed since it started is refused.
-      const queue = yield* Queue.unbounded<Run>()
+      const queue = yield* Queue.unbounded<Readonly<{ run: Run; resumed: boolean }>>()
       const slots = yield* Semaphore.make(Math.max(1, options.concurrency ?? 1))
       const runScope = yield* Effect.scope
       yield* Effect.gen(function* () {
         yield* slots.take(1)
         const next = yield* Queue.take(queue)
-        const { resumed, ...run } = next as Run & { resumed?: boolean }
-        yield* execute(run, resumed === true).pipe(Effect.ensuring(slots.release(1)), Effect.forkIn(runScope))
+        yield* execute(next.run, next.resumed).pipe(Effect.ensuring(slots.release(1)), Effect.forkIn(runScope))
       }).pipe(Effect.forever, Effect.forkScoped)
       // Runs the app stopped during carry on, oldest first.
       for (const run of resumable.sort((a, b) => a.startedAt - b.startedAt)) {
         yield* Effect.logInfo(`jellyware: run ${run.id} carries on after a restart`)
         yield* save(run)
-        yield* Queue.offer(queue, { ...run, resumed: true } as Run)
+        yield* Queue.offer(queue, { run, resumed: true })
       }
 
       return Changes.of({
@@ -783,7 +782,7 @@ export const layer = <R = never>(options: Options<R>): Layer.Layer<Changes, neve
               warnings: [],
             }
             yield* save(run)
-            yield* Queue.offer(queue, run)
+            yield* Queue.offer(queue, { run, resumed: false })
             return id
           }),
         activity: runId =>

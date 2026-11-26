@@ -102,6 +102,8 @@ const app = layer({
     services: remoteServices,
     servicesModule: fixture,
     identify: () => Effect.succeed(undefined),
+    // Extension processes never load SQLite: their data goes through the server.
+    forbidden: ['node:sqlite'],
     heartbeat: '200 millis',
     deadline: '1 second',
   },
