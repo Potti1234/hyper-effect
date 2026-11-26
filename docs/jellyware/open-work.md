@@ -259,9 +259,30 @@ Tests: chart geometry, the chart and calendar programs (Story); islands built pe
   - **Contained:** tooltips stay inside the frame, and a frame cannot reach the page's keyboard shortcuts.
   - **Failures not run back to the agent:** a crash in the browser is shown to administrators, not sent to the agent; no check runs an island in a browser before a run goes live.
 
+## Found by Fractal, a bb replica (built 2026-11-26)
+
+[Fractal](https://github.com/Potti1234/fractal-agent/tree/bb-replica) rebuilt bb (a local app for coding agents) on hyper-effect and jellyware: bb's plugin places as slots, ten extensions in their own processes, agent tools over MCP for Claude Code, Codex and pi, and extensions written by all three CLIs through the change pipeline. Its `docs/findings.md` lists what did not fit. What changed here:
+
+- **Data slots** (`dataSlot(name, Schema)`, `contributions.data`, `slotData`). Slots carried cards only, so an agent's instructions (a text) and a tool's description (a name, a description, a JSON Schema) were packed into card fields. A data slot holds values of the app's own shape, typed by a Schema on both sides, sent as JSON across the process boundary; a value that fails, does not decode or has not arrived after `cardTimeout` is left out.
+- **A context on commands** (`CommandInput.context`). A tool needed the thread it works for and got it through its arguments; the caller now says where a command runs, as slots get a context.
+- **Options on a run** (`Changes.start(prompt, author, thread, options)`, `Task.options`). Which agent CLI writes a change was a global setting that runs started together raced for. A follow-up keeps the options of the run before it.
+- **Runs carry on after a restart** (`resume`, default on; `Task.resumed`). A server restarted during a run marked it failed and lost the agent's work; now the run goes back to the queue with the stage it left, and the agent is told.
+- **The protected-folder check names the files**, and with `review` it is a warning on the run (`Run.warnings`) for the reviewer instead of a failure: a person editing the app while the agent worked failed the agent's run.
+- **Forbidden modules in bundles** (`isolation.forbidden`). An extension imported the app's extension API, which imported a service module, which imported the store, the agent runtime and `node:sqlite`; the import check sees an extension's own imports only. A bundle that includes a forbidden module fails to build, naming the chain of imports.
+- **No SQLite in extension processes.** The data service and its types live in `data-service.ts`; the SQLite implementation stays in the server.
+- **The typecheck and test checks in the package** (`typecheckCheck`, `testsCheck`). The example and Fractal carried copies that failed every run when the runs lived outside the app's folder. They now resolve the app's types, tsconfig paths, package imports and `node_modules` from the app, wherever the snapshot is. The changes layer warns when runs live outside the app.
+- **Shared slot streams** (`slotCards(slot, context, { shared: true })`, `keepShared`). Every page of every session ran each extension's content on its own; pages now share one stream per slot and context. One-off reads do not share.
+- **In core:** `provided(layer)` to find what a composed layer still needs, and pitfalls in the skill (routes whose handlers use services, menus under their backdrop, CSS for new classes in `src/`).
+
+What is still open from Fractal's list:
+
+- **Extension pages are other programs.** Going from the app's page to an extension's page is a full page load, and each page renders the app's frame (`frame` in Fractal, the shell in the example). bb's plugin panels open inside the app. It needs a way for one session to show another program's view in a region: a sub-program, with its own Model, Messages and snapshot, inside the app's page.
+- **The app's types are part of the extension API.** Adding a required field to a type extensions build (Fractal's `Turn`) broke two extensions' tests. Keep new fields optional, and typecheck `extensions/` with the app (both apps' `tsconfig.json` include it).
+- **Facades are the app's work.** An extension in its own process reaches only the members of the app's services listed in `remote.ts`; everything an extension page's frame shows must be in them.
+
 ## The list
 
-Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 13 on 2026-11-25, in this order; the sections above describe what each does and what it misses.
+Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 13 on 2026-11-25, item 15 on 2026-11-26, in this order; the sections above describe what each does and what it misses.
 
 ### Done
 
@@ -280,9 +301,11 @@ Everything left, by size. Items 1 to 8 were done on 2026-11-24, items 9 to 13 on
 | 11 | **A child process per extension**, with a watchdog: bundled, Node's permission model, the app's services over a channel, pages forwarded. | Done: [extensions in their own process](#extensions-in-their-own-process-built-2026-11-25) |
 | 12 | **Data and migrations for extensions.** A SQLite database per extension, append-only migrations declared in extension.json and checked on a copy before a run goes live, rows through `ExtensionData`. | Done: [data of extensions](#data-of-extensions-built-2026-11-25) |
 | 13 | **Browser code in extensions.** Charts and maps the app ships, and an extension's own islands in sandboxed frames without network, built per version. | Done: [browser code](#browser-code-charts-maps-and-islands-of-extensions-built-2026-11-25) |
+| 15 | **What Fractal found.** Data slots, a context on commands, options on runs, runs that carry on after a restart, named outside files, forbidden modules in bundles, no SQLite in extension processes, the checks in the package, shared slot streams. | Done: [found by Fractal](#found-by-fractal-a-bb-replica-built-2026-11-26) |
 
 ### Large
 
 | # | Work | Why | Where it was described |
 |---|---|---|---|
 | 14 | **Several servers.** Extensions and runs in the shared store (Postgres); a change feed tells every server to load a new version | [One server, one folder](#one-server-one-folder) | above |
+| 16 | **Extension pages inside the app's page.** A sub-program in a region: an extension's page shown in the app's frame without a page load, as bb's plugin panels | Full page loads between the app and extensions' pages | [found by Fractal](#found-by-fractal-a-bb-replica-built-2026-11-26) |
