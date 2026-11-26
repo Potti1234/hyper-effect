@@ -4,7 +4,7 @@ import { KeyValueStore } from 'effect/persistence'
 
 import { PageHost, StylesheetChanges, servedPage } from '@hyper-effect/core'
 
-import { type BadgeEntry, type CommandEntry, Contributions, Inventory, NavEntry, SlotBadge, SlotCard, type SlotEntry } from '../contributions.ts'
+import { type BadgeEntry, type CommandEntry, Contributions, type DataEntry, Inventory, NavEntry, SlotBadge, SlotCard, type SlotEntry, SlotValue } from '../contributions.ts'
 import { DataError, ExtensionData, SqlValueSchema } from '../data.ts'
 import { ExtensionIslands } from '../islands/view.ts'
 import { ExtensionSettings, type SettingValues, valuesOf } from '../settings.ts'
@@ -96,6 +96,7 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
     // THE REGISTRY: entries live in the server; content and commands here.
     const slots = new Map<string, SlotEntry>()
     const badges = new Map<string, BadgeEntry>()
+    const dataEntries = new Map<string, DataEntry>()
     const commands = new Map<string, CommandEntry>()
     const contributions = Contributions.of({
       nav: entry => Effect.asVoid(Effect.orDie(peer.scoped('contributions.nav', [entry]))),
@@ -125,6 +126,18 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
         }),
       slotBadges: (slot, context) =>
         peer.stream('contributions.slotBadges', [slot, context]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotBadge)))),
+      data: <R,>(entry: DataEntry<R>) =>
+        Effect.gen(function* () {
+          const context = yield* Effect.context<R>()
+          const key = `${entry.slot}\u0000${entry.id}`
+          yield* Effect.acquireRelease(
+            Effect.sync(() => dataEntries.set(key, { ...entry, content: ctx => entry.content(ctx).pipe(Stream.provideContext(context)) })),
+            () => Effect.sync(() => dataEntries.delete(key)),
+          )
+          yield* Effect.orDie(peer.scoped('contributions.data', [{ slot: entry.slot, id: entry.id, key }]))
+        }),
+      slotData: (slot, context) =>
+        peer.stream('contributions.slotData', [slot, context]).pipe(Stream.orDie, Stream.mapEffect(decodeOrDie(S.Array(SlotValue)))),
       command: <R,>(entry: CommandEntry<R>) =>
         Effect.gen(function* () {
           const context = yield* Effect.context<R>()
@@ -147,6 +160,11 @@ export const runChild = (extension: unknown, services: ReadonlyArray<RemoteServi
       kind: 'stream',
       open: ([key, context]) =>
         Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(context), decoded => badges.get(String(key))?.content(decoded) ?? Stream.empty)),
+    })
+    serve('data-slot.open', {
+      kind: 'stream',
+      open: ([key, context]) =>
+        Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(context), decoded => dataEntries.get(String(key))?.content(decoded) ?? Stream.empty)),
     })
     serve('command.run', {
       kind: 'call',

@@ -10,6 +10,7 @@ export {
   type CommandEntry,
   type CommandInput,
   Contributions,
+  type DataEntry,
   type ContributionsOptions,
   CurrentExtension,
   Inventory,
@@ -21,7 +22,9 @@ export {
   type SlotContext,
   type SlotEntry,
   SlotItem,
+  SlotValue,
 } from './contributions.ts'
+export { type DataSlot, dataSlot } from './data-slot.ts'
 export { DataError, ExtensionData, type Row, type SqlValue } from './data.ts'
 export { type IslandSpec, defineIsland, islandPorts } from './islands/contract.ts'
 export { ExtensionIslands, type IslandViewConfig, islandView } from './islands/view.ts'

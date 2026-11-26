@@ -375,6 +375,19 @@ export const isolatedExtension = (
             ),
           ),
       })
+      serve('contributions.data', {
+        kind: 'scoped',
+        acquire: ([entry]) =>
+          Effect.flatMap(decodeOrDie(Registration)(entry), ({ slot, id: entryId, key }) =>
+            provide(
+              contributions.data({
+                slot,
+                id: entryId,
+                content: slotContext => peer.stream('data-slot.open', [key, slotContext]).pipe(Stream.mapEffect(decodeOrDie(S.Json)), Stream.orDie),
+              }),
+            ),
+          ),
+      })
       serve('contributions.command', {
         kind: 'scoped',
         acquire: ([entry]) =>
@@ -404,6 +417,10 @@ export const isolatedExtension = (
       serve('contributions.slotBadges', {
         kind: 'stream',
         open: ([slot, slotContext]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotBadges(String(slot), decoded))),
+      })
+      serve('contributions.slotData', {
+        kind: 'stream',
+        open: ([slot, slotContext]) => Stream.unwrap(Effect.map(decodeOrDie(SlotContext)(slotContext), decoded => contributions.slotData(String(slot), decoded))),
       })
       serve('contributions.inventory', { kind: 'call', run: () => contributions.inventory })
       serve('contributions.inventoryChanges', { kind: 'stream', open: () => contributions.inventoryChanges })

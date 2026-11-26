@@ -25,6 +25,11 @@ import { Cause, Context, Deferred, Duration, Effect, Layer, Schema as S, type Sc
    - Badges: short labels a page shows on things it lists (issues), by the
      thing's id. Like slots, from a stream per context; a stream that fails
      or has nothing yet adds no badges.
+   - Data slots: places where the app wants data of its own shape rather
+     than a card (a text for an agent's instructions, a tool's description
+     with its JSON Schema). An extension gives a stream of JSON values per
+     context; `dataSlot` in data-slot.ts types both sides with a Schema. A
+     value that fails or has not arrived after `cardTimeout` is left out.
    - Commands: what a slot's actions run, by id, with JSON arguments, for a
      member. A page only runs actions it shows (they are in its Model), so a
      browser cannot invent a command or its arguments. A command may name
@@ -100,6 +105,7 @@ export const Inventory = S.Struct({
   nav: S.Array(S.Struct({ entry: NavEntry, owner: Owner })),
   slots: S.Array(S.Struct({ slot: S.String, id: S.String, owner: Owner })),
   badges: S.Array(S.Struct({ slot: S.String, id: S.String, owner: Owner })),
+  data: S.Array(S.Struct({ slot: S.String, id: S.String, owner: Owner })).pipe(S.withDecodingDefaultKey(Effect.succeed([]))),
   commands: S.Array(S.Struct({ id: S.String, roles: S.NullOr(S.Array(S.String)), owner: Owner })),
 })
 export type Inventory = typeof Inventory.Type
@@ -117,6 +123,19 @@ export type SlotEntry<R = never> = Readonly<{
    *  should emit at once: the slot shows once every card has content. */
   content: (context: SlotContext) => Stream.Stream<SlotContent, never, R>
 }>
+
+export type DataEntry<R = never> = Readonly<{
+  /** The data slot's name, such as `agent.instructions`. */
+  slot: string
+  /** Unique per slot; a newer entry with the same id replaces the older. */
+  id: string
+  /** The value for a page's context (JSON), now and whenever it changes. */
+  content: (context: SlotContext) => Stream.Stream<S.Json, never, R>
+}>
+
+/** One entry's value in a data slot. */
+export const SlotValue = S.Struct({ id: S.String, value: S.Json })
+export type SlotValue = typeof SlotValue.Type
 
 export type BadgeEntry<R = never> = Readonly<{
   /** The slot's name, such as `issues.badges`. */
@@ -173,6 +192,11 @@ export class Contributions extends Context.Service<
     /** The badges of a slot for a context, from every entry, now and after
      *  every change. */
     readonly slotBadges: (slot: string, context: SlotContext) => Stream.Stream<ReadonlyArray<SlotBadge>>
+    /** Adds a value to a data slot for the life of the current scope. */
+    readonly data: <R>(entry: DataEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
+    /** The values of a data slot for a context, one per entry that has
+     *  one, now and after every change. */
+    readonly slotData: (slot: string, context: SlotContext) => Stream.Stream<ReadonlyArray<SlotValue>>
     /** Adds a command for the life of the current scope. */
     readonly command: <R>(entry: CommandEntry<R>) => Effect.Effect<void, never, Scope.Scope | R>
     /** Runs a command; fails with a line for the member when it is gone or
@@ -194,12 +218,14 @@ export class Contributions extends Context.Service<
         const slots = yield* stacks<SlotEntry>()
         const commands = yield* stacks<CommandEntry>()
         const badgeEntries = yield* stacks<BadgeEntry>()
+        const dataEntries = yield* stacks<DataEntry>()
         const appServices = yield* Effect.context<R>()
 
         const inventoryNow = (): Inventory => ({
           nav: navs.owned().map(({ value, owner }) => ({ entry: value, owner })),
           slots: slots.owned().map(({ value, owner }) => ({ slot: value.slot, id: value.id, owner })),
           badges: badgeEntries.owned().map(({ value, owner }) => ({ slot: value.slot, id: value.id, owner })),
+          data: dataEntries.owned().map(({ value, owner }) => ({ slot: value.slot, id: value.id, owner })),
           commands: commands.owned().map(({ value, owner }) => ({ id: value.id, roles: value.roles ?? null, owner })),
         })
 
@@ -306,6 +332,39 @@ export class Contributions extends Context.Service<
                     ).pipe(Stream.map(lists => lists.flat())),
               ),
             ),
+          data: <R,>(entry: DataEntry<R>) =>
+            Effect.gen(function* () {
+              const services = yield* Effect.context<R>()
+              const owner = yield* CurrentExtension
+              yield* dataEntries.add(
+                `${entry.slot}\u0000${entry.id}`,
+                { slot: entry.slot, id: entry.id, content: context => entry.content(context).pipe(Stream.provideContext(services)) },
+                owner,
+              )
+            }),
+          slotData: (slot, context) =>
+            SubscriptionRef.changes(dataEntries.live).pipe(
+              Stream.map(all => all.filter(entry => entry.slot === slot)),
+              Stream.changesWith((a, b) => a.length === b.length && a.every((entry, index) => entry === b[index])),
+              Stream.switchMap(entries =>
+                entries.length === 0
+                  ? Stream.succeed<ReadonlyArray<SlotValue>>([])
+                  : Stream.zipLatestAll(
+                      ...entries.map(entry =>
+                        withFallback(
+                          cardTimeout,
+                          null,
+                          entry.content(context).pipe(
+                            Stream.map((value): SlotValue | null => ({ id: entry.id, value })),
+                            Stream.catchCause(cause =>
+                              Stream.fromEffect(Effect.as(Effect.logWarning(`jellyware: the data of ${entry.id} in ${slot} failed`, cause), null)),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ).pipe(Stream.map(values => values.filter((value): value is SlotValue => value !== null))),
+              ),
+            ),
           command: <R,>(entry: CommandEntry<R>) =>
             Effect.gen(function* () {
               const services = yield* Effect.context<R>()
@@ -332,6 +391,7 @@ export class Contributions extends Context.Service<
               SubscriptionRef.changes(navs.live).pipe(Stream.as(undefined)),
               SubscriptionRef.changes(slots.live).pipe(Stream.as(undefined)),
               SubscriptionRef.changes(badgeEntries.live).pipe(Stream.as(undefined)),
+              SubscriptionRef.changes(dataEntries.live).pipe(Stream.as(undefined)),
               SubscriptionRef.changes(commands.live).pipe(Stream.as(undefined)),
             ],
             { concurrency: 'unbounded' },

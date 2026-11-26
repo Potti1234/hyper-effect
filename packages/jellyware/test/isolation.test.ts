@@ -48,6 +48,7 @@ export default Layer.effectDiscard(
       id: 'counter',
       content: () => counter.changes.pipe(Stream.map(n => ({ title: 'Count ' + n, items: [], actions: [], note: process.pid === undefined ? null : 'pid ' + process.pid }))),
     })
+    yield* contributions.data({ slot: 'd', id: 'counter', content: context => counter.changes.pipe(Stream.map(n => ({ count: n, for: context['who'] ?? null }))) })
     yield* contributions.command({
       id: 'counter.add',
       run: ({ args }) =>
@@ -147,6 +148,9 @@ describe('extensions in a process of their own', () => {
       )
       const later = yield* Stream.runHead(contributions.slotCards('s', {}))
       assert.strictEqual(later._tag === 'Some' ? later.value[0]?.content.title : undefined, 'Count 2')
+      // A data slot's value crosses as JSON, with the context.
+      const data = yield* Stream.runHead(contributions.slotData('d', { who: 'ada' }))
+      assert.deepStrictEqual(data._tag === 'Some' ? data.value : undefined, [{ id: 'counter', value: { count: 2, for: 'ada' } }])
 
       // Its file system is its bundle.
       assert.strictEqual(yield* Effect.flip(contributions.run('counter.read', { args: null, memberId: 'ada' })), 'ERR_ACCESS_DENIED')
