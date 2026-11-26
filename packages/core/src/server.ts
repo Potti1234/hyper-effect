@@ -65,6 +65,15 @@ export type Options<R = never> = Readonly<{
    *  a session: none is left behind when the link is never followed, and the
    *  page's stream starts it from the URL when it is. */
   prefetch?: ReadonlyArray<string>
+  /** URL patterns (as `prefetch`, such as `/*`) of other hyper-effect pages
+   *  this page moves to without a page load: a link to one (outside this
+   *  program's own paths) fetches that page and puts its body in place of
+   *  this one's, keeping the stylesheets and scripts already loaded; the new
+   *  page starts its session as on a load, and this page's stream ends with
+   *  its body. A page that is not a hyper-effect page, or fails, is loaded
+   *  as usual. Back and forward move the same way. For apps whose pages
+   *  share a frame (a sidebar) across programs. */
+  softNavigation?: ReadonlyArray<string>
   /** Stylesheets linked from the page head. */
   stylesheets?: ReadonlyArray<string>
   /** Module scripts loaded by the page, such as an islands bundle. */
@@ -479,6 +488,77 @@ const CLIENT_SCRIPT = `(() => {
       })
       .catch(() => location.assign(url.href))
   }
+  // Moving to another program's page without a page load (softNavigation).
+  const softPatterns = () => {
+    try { return JSON.parse(control()?.getAttribute('data-hyper-soft') ?? '[]') } catch { return [] }
+  }
+  // Patterns as speculation rules write them: '*' stands for any text.
+  const matchesPattern = (pattern, path) => {
+    const parts = pattern.split('*')
+    if (parts.length === 1) return path === pattern
+    if (!path.startsWith(parts[0])) return false
+    let at = parts[0].length
+    for (const part of parts.slice(1, -1)) {
+      const found = path.indexOf(part, at)
+      if (found === -1) return false
+      at = found + part.length
+    }
+    const last = parts[parts.length - 1]
+    return path.length - last.length >= at && path.endsWith(last)
+  }
+  const isSoft = url => url.origin === location.origin && softPatterns().some(pattern => matchesPattern(pattern, url.pathname))
+  // A page's head without its style elements (only real tags, and only in
+  // the head: this script's own text mentions them too).
+  // Written in parts, so that this script holds no tag-like text.
+  const STYLE_OPEN = '<' + 'style'
+  const STYLE_CLOSE = '</' + 'style>'
+  const withoutStyles = html => {
+    const bodyAt = html.indexOf('<body')
+    const head = bodyAt === -1 ? html : html.slice(0, bodyAt)
+    let out = ''
+    let at = 0
+    for (;;) {
+      const start = head.indexOf(STYLE_OPEN, at)
+      const next = start === -1 ? '' : head.charAt(start + 6)
+      if (start === -1) break
+      if (next !== ' ' && next !== '>') { out += head.slice(at, start + 6); at = start + 6; continue }
+      const end = head.indexOf(STYLE_CLOSE, start)
+      if (end === -1) break
+      out += head.slice(at, start)
+      at = end + 8
+    }
+    return out + head.slice(at) + (bodyAt === -1 ? '' : html.slice(bodyAt))
+  }
+  let softLoading = null
+  const softLoad = (url, push) => {
+    const loading = {}
+    softLoading = loading
+    fetch(url.href, { credentials: 'same-origin', headers: { Accept: 'text/html' } })
+      .then(async response => {
+        const type = response.headers.get('content-type') ?? ''
+        if (!response.ok || !type.includes('text/html') || new URL(response.url).origin !== location.origin) throw new Error('not a page')
+        // Without its style elements: their nonce is not this document's,
+        // and this page has the same client styles already.
+        const next = new DOMParser().parseFromString(withoutStyles(await response.text()), 'text/html')
+        if (!next.getElementById('${CONTROL_ID}')) throw new Error('not a hyper-effect page')
+        if (softLoading !== loading) return
+        // Its stylesheets first, so the new body never shows unstyled.
+        const sheets = [...next.querySelectorAll('link[rel="stylesheet"]')].filter(link => !document.querySelector('link[rel="stylesheet"][href="' + CSS.escape(link.getAttribute('href') ?? '') + '"]'))
+        await Promise.all(sheets.map(link => new Promise(resolve => { const copy = document.createElement('link'); copy.rel = 'stylesheet'; copy.href = link.getAttribute('href') ?? ''; copy.onload = copy.onerror = resolve; document.head.append(copy) })))
+        for (const script of next.querySelectorAll('script[type="module"][src]')) {
+          const src = script.getAttribute('src') ?? ''
+          if (!document.querySelector('script[src="' + CSS.escape(src) + '"]')) { const copy = document.createElement('script'); copy.type = 'module'; copy.src = src; document.head.append(copy) }
+        }
+        if (softLoading !== loading) return
+        const target = new URL(response.url)
+        if (push) history.pushState(null, '', target.pathname + target.search + url.hash)
+        document.title = next.title
+        // The old body goes, with its control element and its stream.
+        document.body.replaceChildren(...[...next.body.childNodes].map(node => document.adoptNode(node)))
+        window.scrollTo(0, 0)
+      })
+      .catch(() => { if (softLoading === loading) location.assign(url.href) })
+  }
   const linkOf = evt => {
     if (evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey || evt.defaultPrevented) return null
     const anchor = evt.target instanceof Element ? evt.target.closest('a[href]') : null
@@ -494,7 +574,17 @@ const CLIENT_SCRIPT = `(() => {
   })
   document.addEventListener('click', evt => {
     const url = linkOf(evt)
-    if (!url) return
+    if (!url) {
+      // A link to another program's page that moves without a page load.
+      if (evt.button !== 0 || evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey || evt.defaultPrevented) return
+      const anchor = evt.target instanceof Element ? evt.target.closest('a[href]') : null
+      if (!anchor || (anchor.target && anchor.target !== '_self') || anchor.hasAttribute('download') || anchor.hasAttribute('data-hyper-reload')) return
+      const other = new URL(anchor.href, location.href)
+      if (other.href === location.href || !isSoft(other)) return
+      evt.preventDefault()
+      softLoad(other, true)
+      return
+    }
     evt.preventDefault()
     if (url.href !== location.href) {
       history.pushState(null, '', url.href)
@@ -506,7 +596,12 @@ const CLIENT_SCRIPT = `(() => {
   document.addEventListener('dragstart', () => {
     if (pressedLink) { pressedLink = null; navigateInSession(new URL(location.href)) }
   })
-  window.addEventListener('popstate', () => { if (inSession(new URL(location.href))) navigateInSession(new URL(location.href)); else location.reload() })
+  window.addEventListener('popstate', () => {
+    const url = new URL(location.href)
+    if (inSession(url)) navigateInSession(url)
+    else if (isSoft(url)) softLoad(url, false)
+    else location.reload()
+  })
   // A page restored from the back/forward cache has lost its stream, and the
   // session may be gone; load it again rather than show a dead page.
   window.addEventListener('pageshow', evt => { if (evt.persisted) location.reload() })
@@ -1273,8 +1368,10 @@ export const servedPage = <Model, Message, ClientMessage extends Message, Flags,
           ),
           '</head>',
           '<body>',
-          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-signals:${STYLES_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL}); window.${SET_STYLES}?.($${STYLES_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}')" data-hyper-endpoint="${endpoint(id)}"${
+          `<div hidden id="${CONTROL_ID}" data-signals:${SEQUENCE_SIGNAL}="0" data-signals:${ENDPOINT_SIGNAL}="'${endpoint(id)}'" data-signals:${ACTIONS_SIGNAL}="''" data-signals:${APPLIED_SIGNAL}="''" data-signals:${STYLES_SIGNAL}="''" data-effect="window.${APPLIED}?.($${APPLIED_SIGNAL}); window.${RUN_ACTIONS}?.($${ACTIONS_SIGNAL}, $${ENDPOINT_SIGNAL}); window.${SET_STYLES}?.($${STYLES_SIGNAL})" data-init="@get('${endpoint(id)}/stream?u=${pageUrl}', {requestCancellation: 'cleanup'})" data-hyper-endpoint="${endpoint(id)}"${
             program.onUrlChange === undefined ? '' : ` data-hyper-paths="${escapeAttribute(JSON.stringify(patterns))}"`
+          }${
+            options.softNavigation === undefined || options.softNavigation.length === 0 ? '' : ` data-hyper-soft="${escapeAttribute(JSON.stringify(options.softNavigation))}"`
           }></div>`,
           rendered.html,
           '</body>',
